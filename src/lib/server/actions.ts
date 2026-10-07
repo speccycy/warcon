@@ -661,7 +661,8 @@ export const ACTIONS: Record<string, ActionDef> = {
 	// As the official console does it: move the faction, then kill the player so they respawn on the
 	// new side. A failed kill is not an error; the move already happened. A kill refused for sending
 	// too fast says so, and carries the wait the game asked for (`retryAfterMs`) so a caller can
-	// hold off the server; it is not sent again, since the move is done.
+	// hold off the server; it is not sent again, since the move is done. `kill: false` sends the move
+	// alone (the Team balance rule's moves).
 	changeTeam: {
 		cap: 'players.move',
 		mutating: true,
@@ -673,6 +674,7 @@ export const ACTIONS: Record<string, ActionDef> = {
 			}
 			const id = steamId(p.steamId);
 			const moved = await c.json('PATCH', `/v1/players/${id}`, { faction });
+			if (p.kill === false) return { ...moved, message: `Moved to ${faction}.` };
 			let respawned = true;
 			let retryAfterMs = 0;
 			try {

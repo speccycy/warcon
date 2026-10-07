@@ -145,7 +145,13 @@ describe.skipIf(!hasTestDb)('what View shows', () => {
 		const viewer = await dossier('viewer');
 		expect(viewer.notes).toEqual([]);
 		expect(viewer.watch).toMatchObject({ watched: true, reason: '', updatedByName: '' });
-		expect(viewer.orgLists).toEqual({ ban: null, reserve: null, canBan: false, canReserve: false });
+		expect(viewer.orgLists).toEqual({
+			ban: null,
+			reserve: null,
+			canBan: false,
+			canReserve: false,
+			banReasons: null
+		});
 		expect(JSON.stringify(viewer)).not.toContain('suspected alt');
 		expect(JSON.stringify(viewer)).not.toContain('org-wide ban reason');
 

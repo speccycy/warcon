@@ -23,6 +23,7 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 			dossier(env, user, server, access, params.steamId),
 			loadCareer(env, {
 				serverId: server.id,
+				orgId: server.orgId,
 				ids: visible.map((s) => s.id),
 				nameOf: new Map(visible.map((s) => [s.id, s.name])),
 				steamId: params.steamId

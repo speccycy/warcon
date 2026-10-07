@@ -1,5 +1,6 @@
 // A Two-team mode sort is a hundred moves at every match start: the audit trail keeps each, and the
-// org's Automation webhook hears only of the ones that fail. Other rules post as before.
+// org's Automation webhook hears only of the ones that fail. A Kill distance rule's note of a kill it
+// left out stays in the audit trail. Other rules post as before.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { and, eq } from 'drizzle-orm';
 import type { Env } from '$lib/server/env';
@@ -39,7 +40,12 @@ describe.skipIf(!hasTestDb)('Two-team mode on Discord', () => {
 		resetWebhookQueues();
 	});
 
-	const delivery = (action: string, outcome: 'ok' | 'error', message: string) =>
+	const delivery = (
+		action: string,
+		outcome: 'ok' | 'error',
+		message: string,
+		detail?: Record<string, unknown>
+	) =>
 		writeAudit(env, null, {
 			actorName: 'trigger: rule',
 			server: { id: w.server.id, name: 'Server' },
@@ -48,13 +54,13 @@ describe.skipIf(!hasTestDb)('Two-team mode on Discord', () => {
 			action,
 			target: '76561198000000951',
 			outcome,
-			message
+			message,
+			detail
 		});
 
 	test('moves that land stay off Discord; one that fails, and other rules, are posted', async () => {
 		posts.length = 0;
-		for (let i = 0; i < 20; i++)
-			await delivery('trigger.two_teams', 'ok', 'Moved to Valkyra and killed.');
+		for (let i = 0; i < 20; i++) await delivery('trigger.two_teams', 'ok', 'Moved to Valkyra.');
 		await delivery('trigger.two_teams', 'error', 'The player is not on the server.');
 		await delivery('trigger.welcome', 'ok', 'Whispered.');
 		await new Promise((r) => setTimeout(r, 2000));
@@ -79,5 +85,25 @@ describe.skipIf(!hasTestDb)('Two-team mode on Discord', () => {
 			(JSON.parse(body) as { embeds: { title: string }[] }).embeds.map((e) => e.title)
 		);
 		expect(titles).toEqual(['Trigger · AFK protection']);
+	});
+
+	test('a Kill distance rule’s note of a kill it left out stays off Discord; its flag is posted', async () => {
+		posts.length = 0;
+		await delivery(
+			'trigger.kill_distance',
+			'ok',
+			'Not counted: M4 kill from 2295 m by p806, 4.3 s after they died',
+			{
+				rconAction: 'kill_distance_skip'
+			}
+		);
+		await delivery('trigger.kill_distance', 'ok', 'Flagged p801: M4 kill from 2300 m', {
+			rconAction: 'kill_distance_flag'
+		});
+		await new Promise((r) => setTimeout(r, 2000));
+		const titles = posts.flatMap((body) =>
+			(JSON.parse(body) as { embeds: { title: string }[] }).embeds.map((e) => e.title)
+		);
+		expect(titles).toEqual(['Trigger · kill distance watch']);
 	});
 });

@@ -8,6 +8,8 @@ import { sql } from 'drizzle-orm';
 import type { Env } from './env';
 import type { ServerRow, SessionUser } from './access';
 import { writeAudit } from './audit';
+import { forgetBoards } from './leaderboards';
+import { lockTotals } from './totals';
 
 export interface PurgeCounts {
 	kills: number;
@@ -22,6 +24,9 @@ export async function purgeServerStats(
 	server: ServerRow
 ): Promise<PurgeCounts> {
 	const counts = await env.db.transaction(async (tx) => {
+		// The deletes recount the server's totals (migration 0038): the totals lock first, as the
+		// worker takes it before it closes a session or ends a match (totals.ts).
+		await lockTotals(tx, server.id);
 		const del = async (table: 'kills' | 'match_players' | 'matches') => {
 			const [row] = await tx.execute<{ n: string }>(sql`
 				WITH d AS (DELETE FROM ${sql.raw(table)} WHERE server_id = ${server.id} RETURNING 1)
@@ -33,6 +38,8 @@ export async function purgeServerStats(
 		const matches = await del('matches');
 		return { kills, matches, matchPlayers };
 	});
+	// The boards this web process keeps for a minute would show the purged numbers until then.
+	forgetBoards(server.id);
 	await writeAudit(env, req, {
 		actor,
 		server: { id: server.id, name: server.name },

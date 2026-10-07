@@ -22,6 +22,7 @@ export const GET = route(async (event) => {
 	if (!name) throw new ApiError(404, 'Not found.', 'not_found');
 	const career = await loadCareer(env, {
 		serverId: ps.server.id,
+		orgId: ps.org.id,
 		ids,
 		nameOf: new Map(orgServers.map((s) => [s.id, s.name])),
 		steamId

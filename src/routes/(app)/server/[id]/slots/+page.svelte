@@ -471,6 +471,7 @@
 										/>{/if}
 									<a
 										href="/server/{encodeURIComponent(id)}/players/{s.steamId}"
+										data-sveltekit-preload-data="tap"
 										class="truncate font-medium hover:text-accent hover:underline {s.name
 											? ''
 											: 'text-mist-400 italic'}"

@@ -76,8 +76,10 @@
 <div class="grid gap-3">
 	{#each matches as m (m.id)}
 		{#if m.endedAt}
-			<a href={hrefFor(m)} class="block panel py-4 transition-colors hover:border-mist-600"
-				>{@render card(m)}</a
+			<a
+				href={hrefFor(m)}
+				data-sveltekit-preload-data="tap"
+				class="block panel py-4 transition-colors hover:border-mist-600">{@render card(m)}</a
 			>
 		{:else}
 			<div class="panel py-4">{@render card(m)}</div>

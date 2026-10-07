@@ -35,6 +35,7 @@
 			orgName={data.heading.orgName}
 			multiServer={data.multiServer}
 			matchHref={(m) => `/s/${encodeURIComponent(m.serverId)}/matches/${m.matchId}`}
+			seasonHref={(s) => `${base}/leaderboard?range=s:${encodeURIComponent(s.key)}`}
 		>
 			{#if data.combat}
 				<span class="field-label">Combat</span>

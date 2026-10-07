@@ -8,6 +8,7 @@ import { decryptSecret } from './crypto';
 import { playerMarks, servers, webhooks, type AuditRow, type WebhookRow } from './db/schema';
 import { OWNERS_ROWS } from './audit-rows';
 import { escapeMarkdown } from './webhook-status-core';
+import { KILL_DISTANCE_SKIP } from './kill-distance';
 import { causeLabel } from '$lib/causes';
 import type { KillView } from '$lib/types';
 
@@ -150,6 +151,7 @@ const ACTION_TITLES: Record<string, string> = {
 	'trigger.two_teams': 'Trigger · two-team mode',
 	'trigger.kill_distance': 'Trigger · kill distance watch',
 	'trigger.afk_protection': 'Trigger · AFK protection',
+	'trigger.name_change': 'Trigger · name change watch',
 	'player.note': 'Player note',
 	'player.watch': 'Watchlist',
 	'list.add': 'Org list · added',
@@ -197,8 +199,13 @@ export function buildEmbed(appName: string, row: AuditRow): Embed {
 	};
 }
 
-/** A Kill rate or Kill distance post is a prompt to go and look: it opens the player's page. */
-const DOSSIER_LINKED = new Set(['trigger.kill_rate', 'trigger.kill_distance']);
+/** A Kill rate, Kill distance or Name change post is a prompt to go and look: it opens the player's
+ *  page. */
+const DOSSIER_LINKED = new Set([
+	'trigger.kill_rate',
+	'trigger.kill_distance',
+	'trigger.name_change'
+]);
 function withDossierLink(env: Env, row: AuditRow, embed: Embed): Embed {
 	if (!DOSSIER_LINKED.has(row.action) || !row.serverId || !row.target) return embed;
 	const url = dossierUrl(env.ORIGIN, row.serverId, row.target);
@@ -468,13 +475,19 @@ export async function recordResult(env: Env, id: string, result: PostResult): Pr
  * rule's card out of the webhook's queue.
  */
 const QUIET_WHEN_OK = new Set(['trigger.two_teams', 'trigger.afk_protection']);
+/** A delivery that only notes what a rule saw and let be: the audit trail keeps it, Discord does not. */
+const NOTES = new Set([KILL_DISTANCE_SKIP]);
+const isNote = (row: AuditRow): boolean => {
+	const action = (row.detail as { rconAction?: unknown } | null)?.rconAction;
+	return typeof action === 'string' && NOTES.has(action);
+};
 
 /** Fans one audit row out to the org's webhooks that want its event class. Never throws. */
 export async function notifyWebhooks(env: Env, row: AuditRow): Promise<void> {
 	try {
 		const event = classify(row);
 		if (!event) return;
-		if (row.outcome === 'ok' && QUIET_WHEN_OK.has(row.action)) return;
+		if (row.outcome === 'ok' && (QUIET_WHEN_OK.has(row.action) || isNote(row))) return;
 		const orgId = row.orgId ?? (row.serverId ? await orgOfServer(env, row.serverId) : null);
 		if (!orgId) return;
 		const hooks = await enabledWebhooks(env, orgId);

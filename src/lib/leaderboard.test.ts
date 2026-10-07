@@ -1,18 +1,25 @@
 import { describe, expect, test } from 'bun:test';
 import {
+	BOARD_COLUMNS,
+	BOARD_METRICS,
 	boardQueryParams,
 	DEFAULT_BOARD_QUERY,
 	DEFAULT_FLOOR_MINUTES,
 	groupCareer,
+	hiddenColumns,
 	kdRatio,
 	matchResult,
 	meetsFloor,
 	metricValue,
 	parseBoardQuery,
 	perHour,
+	perMinute,
+	publicQuery,
 	rangeStart,
+	storedHidden,
 	streak,
 	winRate,
+	type BoardQuery,
 	type BoardRow
 } from './leaderboard';
 
@@ -80,6 +87,13 @@ describe('ratios with zero denominators', () => {
 		expect(perHour(30, 90, 30)).toBe(30);
 		expect(perHour(30, 90, 90)).toBeNull();
 	});
+	test('cash per minute needs playtime, and seed time is not playtime', () => {
+		expect(perMinute(900, 90)).toBe(10);
+		expect(perMinute(900, 0)).toBeNull();
+		expect(perMinute(0, 60)).toBe(0);
+		expect(perMinute(900, 90, 30)).toBe(15);
+		expect(perMinute(900, 90, 90)).toBeNull();
+	});
 	test('win rate needs a match with a result', () => {
 		expect(winRate(3, 1, 0)).toBe(0.75);
 		expect(winRate(1, 1, 2)).toBe(0.25);
@@ -113,6 +127,7 @@ describe('board query', () => {
 		expect(
 			parseBoardQuery(new URLSearchParams('scope=x&range=1y&sort=luck&dir=up&page=0&minMinutes=-5'))
 		).toEqual({ ...DEFAULT_BOARD_QUERY, page: 1, minMinutes: 0 });
+		expect(parseBoardQuery(new URLSearchParams('sort=cashPerMin')).sort).toBe('cashPerMin');
 	});
 	test('round-trips through its parameters, defaults left out', () => {
 		expect(boardQueryParams(DEFAULT_BOARD_QUERY)).toEqual({});
@@ -127,12 +142,43 @@ describe('board query', () => {
 	});
 });
 
+describe('the columns a public board leaves out', () => {
+	test("an owner names any column but kills, in any order; it keeps the table's", () => {
+		expect(hiddenColumns([])).toEqual([]);
+		expect(hiddenColumns(['cash', 'seeded', 'cash'])).toEqual(['seeded', 'cash']);
+		for (const bad of [['kills'], ['seeded', 'kills'], ['luck'], [1], 'cash', null, { cash: true }])
+			expect({ bad, hidden: hiddenColumns(bad) }).toEqual({ bad, hidden: null });
+	});
+
+	test('a stored list is read leaving out what is not a column today', () => {
+		expect(storedHidden(['cash', 'gone', 'kills', 'seeded'])).toEqual(['seeded', 'cash']);
+		expect(storedHidden(null)).toEqual([]);
+	});
+
+	test('a sort by a column left out ranks by kills, the board’s first order', () => {
+		const q: BoardQuery = { ...DEFAULT_BOARD_QUERY, sort: 'cash', dir: 'asc', page: 2 };
+		expect(publicQuery(q, ['cash'])).toEqual({ ...q, sort: 'kills', dir: 'desc' });
+		expect(publicQuery(q, ['seeded', 'headshots'])).toBe(q);
+		expect(publicQuery({ ...q, sort: 'wins' }, ['results']).sort).toBe('kills');
+		expect(publicQuery({ ...q, sort: 'cashPerMin' }, ['cashPerMin']).sort).toBe('kills');
+	});
+
+	test('every metric a board sorts by has its column', () => {
+		for (const m of BOARD_METRICS)
+			expect({ metric: m.key, column: BOARD_COLUMNS.some((c) => c.sort === m.key) }).toEqual({
+				metric: m.key,
+				column: true
+			});
+	});
+});
+
 describe('metricValue', () => {
 	const row: BoardRow = {
 		rank: 1,
 		steamId: '76561198000000001',
 		name: 'Nomad',
 		minutes: 120,
+		cashMinutes: 120,
 		seedMinutes: 45,
 		kills: 40,
 		deaths: 0,
@@ -155,9 +201,14 @@ describe('metricValue', () => {
 		expect(metricValue(row, 'perHour')).toBe(32);
 		expect(metricValue(row, 'winRate')).toBe(0.5);
 		expect(metricValue(row, 'cash')).toBe(900);
+		// $900 over the same 75 minutes
+		expect(metricValue(row, 'cashPerMin')).toBe(12);
+		// over the whole time of the sessions it came from, when one began before the range
+		expect(metricValue({ ...row, cashMinutes: 195 }, 'cashPerMin')).toBe(6);
 		expect(metricValue(row, 'seeded')).toBe(45);
 		expect(metricValue({ ...row, minutes: 0 }, 'perHour')).toBeNull();
 		expect(metricValue({ ...row, minutes: 45 }, 'perHour')).toBeNull();
+		expect(metricValue({ ...row, cashMinutes: 45 }, 'cashPerMin')).toBeNull();
 	});
 });
 

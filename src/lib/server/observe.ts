@@ -65,7 +65,7 @@ import {
 	writeMatchPlayers,
 	type Tallies
 } from './match-players';
-import { isOwner, LostOwnership, withOwnedTransaction } from './leadership';
+import { isOwner, LostOwnership, ownershipPeriod, withOwnedTransaction } from './leadership';
 import { settings } from './settings';
 import { isWatched } from './interest';
 import { emit } from './events';
@@ -459,6 +459,8 @@ const sampleKeyOf = (m: ServerMemory) =>
 export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKinds): Promise<void> {
 	const started = Date.now();
 	const ts = new Date(started);
+	// What this look reads is written only in the same period of ownership (leadership.ts).
+	const period = ownershipPeriod();
 	const server = m.server;
 	let client: WardogsClient;
 	let status: Status | null = null;
@@ -470,7 +472,7 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 		if (kinds.players)
 			players = ((await ACTIONS.players.run(client, {})) as { players: Player[] }).players;
 	} catch (err) {
-		await observationFailed(env, m, ts, started, err);
+		await observationFailed(env, m, ts, started, period, err);
 		observations.inc({ outcome: 'failed' });
 		observationSeconds.observe((Date.now() - started) / 1000);
 		return;
@@ -681,23 +683,29 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 	let saved = false;
 	try {
 		if (needWrite)
-			await withOwnedTransaction(env, async (tx) => {
-				if (players && presenceDue)
-					await persistPresence(
-						tx,
-						server.id,
-						m.presence,
-						diff,
-						ts,
-						heartbeatDue,
-						firstVisit,
-						teams
-					);
-				if (ev.intents.length) intents = await enqueueIntents(tx, server.id, ev.intents, watched);
-				if (ev.updates.length) await applyTriggerUpdates(tx, ev.updates);
-				if (liveDue) await writeLive(tx, m, ts);
-				if (sampleDue) await writeSample(tx, m, ts, latencyMs);
-			});
+			await withOwnedTransaction(
+				env,
+				async (tx) => {
+					if (players && presenceDue)
+						await persistPresence(
+							tx,
+							server.id,
+							m.presence,
+							diff,
+							ts,
+							heartbeatDue,
+							firstVisit,
+							teams
+						);
+					if (ev.intents.length) intents = await enqueueIntents(tx, server.id, ev.intents, watched);
+					if (ev.updates.length) await applyTriggerUpdates(tx, ev.updates);
+					if (liveDue) await writeLive(tx, m, ts);
+					if (sampleDue) await writeSample(tx, m, ts, latencyMs);
+				},
+				// A session closing adds to the player's totals: the server's totals lock comes
+				// before the lease row and every other row (totals.ts, leadership.ts).
+				{ totalsOf: players && presenceDue && diff.left.length ? server.id : undefined, period }
+			);
 		if (liveDue) {
 			m.liveKey = liveKey;
 			m.liveWrittenAt = started;
@@ -736,7 +744,12 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 	// player the lists want banned here, seen on the list: banned now, not at the sync's retry.
 	if (look)
 		await stage('match', m, () =>
-			withOwnedTransaction(env, (tx) => reconcileMatch(tx, m, ts, look, matchEnd, prevStatusAt))
+			// Lines written or a match ended or abandoned touch the totals, which only reading the
+			// open match tells: the server's totals lock always, before the lease row (totals.ts).
+			withOwnedTransaction(env, (tx) => reconcileMatch(tx, m, ts, look, matchEnd, prevStatusAt), {
+				totalsOf: m.server.id,
+				period
+			})
 		);
 	if (isOwner()) await stage('lists', m, () => keepLists(env, m, client, started, ts));
 	// After the lists, so a ban just placed removes the player at this look, not the next.
@@ -755,6 +768,7 @@ async function observationFailed(
 	m: ServerMemory,
 	ts: Date,
 	started: number,
+	period: number,
 	err: unknown
 ): Promise<void> {
 	if (err instanceof GameError && err.code === 'rate_limited') {
@@ -765,7 +779,7 @@ async function observationFailed(
 		m.error = publicMessage(err, 'Rate limited.').slice(0, 300);
 		m.observedAt = started;
 		try {
-			await withOwnedTransaction(env, (tx) => writeLive(tx, m, ts));
+			await withOwnedTransaction(env, (tx) => writeLive(tx, m, ts), { period });
 			m.liveKey = liveKeyOf(m);
 			m.liveWrittenAt = started;
 		} catch (e) {
@@ -786,47 +800,54 @@ async function observationFailed(
 	const sampleDue = m.failures === 1 || started - m.sampleWrittenAt >= s.sampleMs;
 	let talliesWritten = false;
 	try {
-		await withOwnedTransaction(env, async (tx) => {
-			if (m.failures >= OFFLINE_AFTER_FAILURES) {
-				// Close every open session once; a rollback below reloads the map so this retries.
-				if (!m.presence.loaded)
-					await loadPresence(
-						tx,
-						m.server.id,
-						m.presence,
-						m.status?.scores.map((f) => f.name)
-					);
-				if (m.presence.open.size) await closeAllSessions(tx, m.presence);
-				// Everyone's line of the match as it stood, to the match still open; the tallies end
-				// with the sessions (after the commit, so a rollback keeps them for the retry).
-				if (m.tallies.size) {
-					const [open] = await tx
-						.select({ id: matches.id })
-						.from(matches)
-						.where(and(eq(matches.serverId, m.server.id), isNull(matches.endedAt)))
-						.orderBy(desc(matches.id))
-						.limit(1);
-					if (open)
-						await writeMatchPlayers(
+		const offline = m.failures >= OFFLINE_AFTER_FAILURES;
+		await withOwnedTransaction(
+			env,
+			async (tx) => {
+				if (offline) {
+					// Close every open session once; a rollback below reloads the map so this retries.
+					if (!m.presence.loaded)
+						await loadPresence(
 							tx,
 							m.server.id,
-							open.id,
-							[...m.tallies.values()].map(tallyRow)
+							m.presence,
+							m.status?.scores.map((f) => f.name)
 						);
-					talliesWritten = true;
+					if (m.presence.open.size) await closeAllSessions(tx, m.presence);
+					// Everyone's line of the match as it stood, to the match still open; the tallies end
+					// with the sessions (after the commit, so a rollback keeps them for the retry).
+					if (m.tallies.size) {
+						const [open] = await tx
+							.select({ id: matches.id })
+							.from(matches)
+							.where(and(eq(matches.serverId, m.server.id), isNull(matches.endedAt)))
+							.orderBy(desc(matches.id))
+							.limit(1);
+						if (open)
+							await writeMatchPlayers(
+								tx,
+								m.server.id,
+								open.id,
+								[...m.tallies.values()].map(tallyRow)
+							);
+						talliesWritten = true;
+					}
+					m.lastMatch = null;
 				}
-				m.lastMatch = null;
-			}
-			if (sampleDue)
-				await tx.insert(samples).values({
-					serverId: m.server.id,
-					ts,
-					ok: false,
-					latencyMs: Date.now() - started,
-					error: m.error
-				});
-			if (liveDue) await writeLive(tx, m, ts);
-		});
+				if (sampleDue)
+					await tx.insert(samples).values({
+						serverId: m.server.id,
+						ts,
+						ok: false,
+						latencyMs: Date.now() - started,
+						error: m.error
+					});
+				if (liveDue) await writeLive(tx, m, ts);
+			},
+			// Closing the sessions adds to the totals, and the tallies go to the open match: the
+			// server's totals lock first, before the lease row (totals.ts, leadership.ts).
+			{ totalsOf: offline ? m.server.id : undefined, period }
+		);
 		if (liveDue) {
 			m.liveKey = liveKey;
 			m.liveWrittenAt = started;
@@ -927,6 +948,8 @@ async function reconcileMatch(
 	prevStatusAt: number
 ): Promise<void> {
 	const serverId = m.server.id;
+	// The caller holds the server's totals lock (writing lines or ending a match touches the
+	// totals), so a purge cannot come in between the read of the match and its writes.
 	const [current] = await db
 		.select({
 			id: matches.id,

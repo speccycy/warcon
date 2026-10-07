@@ -3,7 +3,7 @@
 // servers the caller can open, as the board's own is.
 import { beforeAll, describe, expect, test } from 'bun:test';
 import type { Env } from '$lib/server/env';
-import { playerSessions } from '$lib/server/db/schema';
+import { playerSessions, seasons } from '$lib/server/db/schema';
 import { BOARD_PAGE } from '$lib/leaderboard';
 import { hasTestDb, testEnv } from './db';
 import { callRaw, stubGateway } from './call';
@@ -13,6 +13,8 @@ import { GET as exportRoute } from '../routes/api/servers/[id]/leaderboard/expor
 const PLAYERS = BOARD_PAGE + 5;
 const FORMULA = '=HYPERLINK("http://evil.example","x")';
 const ELSEWHERE = '76561198000000999';
+/** the cash two players made: the first more per minute, the second more in all */
+const CASH: Record<number, number> = { 0: 6_100, 39: 8_000 };
 
 describe.skipIf(!hasTestDb)('leaderboard export', () => {
 	let env: Env;
@@ -23,29 +25,44 @@ describe.skipIf(!hasTestDb)('leaderboard export', () => {
 		stubGateway();
 		w = await seedWorld(env);
 		const hour = 3_600_000;
-		const session = (serverId: string, steamId: string, name: string, minutes: number) => ({
+		const session = (
+			serverId: string,
+			steamId: string,
+			name: string,
+			minutes: number,
+			cash = 0
+		) => ({
 			serverId,
 			steamId,
 			name,
 			joinedAt: new Date(Date.now() - 2 * hour),
 			lastSeen: new Date(Date.now() - 2 * hour + minutes * 60_000),
-			leftAt: new Date(Date.now() - 2 * hour + minutes * 60_000)
+			leftAt: new Date(Date.now() - 2 * hour + minutes * 60_000),
+			cash
 		});
 		await env.db
 			.insert(playerSessions)
 			.values([
 				...Array.from({ length: PLAYERS - 1 }, (_, i) =>
-					session(w.server.id, `7656119800000${String(1000 + i)}`, `Player ${i + 1}`, 61 + i)
+					session(
+						w.server.id,
+						`7656119800000${String(1000 + i)}`,
+						`Player ${i + 1}`,
+						61 + i,
+						CASH[i]
+					)
 				),
 				session(w.server.id, '76561198000002000', FORMULA, 30),
 				session(w.otherServer.id, ELSEWHERE, 'Elsewhere Only', 110)
 			]);
 	});
 
+	// the last 30 days unless the query names a range: the history here is two hours old, so the
+	// default (the current season) would leave it out on a season's first two hours
 	const download = async (who: PrincipalName, query: string, serverId = w.server.id) => {
 		const res = await callRaw(exportRoute, w.users[who], {
 			params: { id: serverId },
-			query
+			query: query.includes('range=') ? query : `${query}&range=30d`
 		});
 		return { res, lines: (await res.text()).split('\r\n') };
 	};
@@ -79,6 +96,7 @@ describe.skipIf(!hasTestDb)('leaderboard export', () => {
 			'draws',
 			'win_pct',
 			'cash',
+			'cash_per_min',
 			'last_seen'
 		]);
 		// more than one page of the board, in the order it ranks them
@@ -87,6 +105,19 @@ describe.skipIf(!hasTestDb)('leaderboard export', () => {
 			true
 		);
 		expect(lines.map((l) => l.split(',')[0]).slice(1, 4)).toEqual(['1', '2', '3']);
+	});
+
+	test('cash per minute is cash over playtime, and the board ranks by it', async () => {
+		const column = (lines: string[], name: string) => {
+			const at = lines[0].split(',').indexOf(name);
+			return lines.slice(1, 3).map((l) => l.split(',')[at]);
+		};
+		// $6,100 over 61 minutes, then $8,000 over 100
+		const rate = (await download('owner', 'minMinutes=0&sort=cashPerMin')).lines;
+		expect(column(rate, 'steam_id')).toEqual(['76561198000001000', '76561198000001039']);
+		expect(column(rate, 'cash_per_min')).toEqual(['100', '80']);
+		const cash = (await download('owner', 'minMinutes=0&sort=cash')).lines;
+		expect(column(cash, 'steam_id')).toEqual(['76561198000001039', '76561198000001000']);
 	});
 
 	test('a name that a spreadsheet would run is written as text', async () => {
@@ -116,5 +147,77 @@ describe.skipIf(!hasTestDb)('leaderboard export', () => {
 		const own = await download('keyElsewhere', 'scope=org&minMinutes=0', w.otherServer.id);
 		expect(own.res.status).toBe(200);
 		expect(own.lines.slice(1).map((l) => l.split(',')[1])).toEqual([ELSEWHERE]);
+	});
+});
+
+describe.skipIf(!hasTestDb)('cash per minute at the edges of a range or a season', () => {
+	const H = 3_600_000;
+	const STRADDLER = '76561198000003001';
+	const STEADY = '76561198000003002';
+	const columns = async (w: World, user: PrincipalName, query: string) => {
+		const res = await callRaw(exportRoute, w.users[user], { params: { id: w.server.id }, query });
+		const [head, ...rows] = (await res.text()).split('\r\n');
+		const at = (name: string) => head.split(',').indexOf(name);
+		return (name: string) => rows.map((r) => r.split(',')[at(name)]);
+	};
+	const session = (
+		w: World,
+		steamId: string,
+		name: string,
+		joined: number,
+		left: number,
+		cash: number
+	) => ({
+		serverId: w.server.id,
+		steamId,
+		name,
+		joinedAt: new Date(joined),
+		lastSeen: new Date(left),
+		leftAt: new Date(left),
+		cash
+	});
+
+	test('a session that began before the range counts all of its time, as it does all of its cash', async () => {
+		const env = await testEnv();
+		stubGateway();
+		const w = await seedWorld(env);
+		const start = Date.now() - 7 * 24 * H;
+		await env.db.insert(playerSessions).values([
+			// four hours at $100 a minute, the last two inside the seven days
+			session(w, STRADDLER, 'Straddler', start - 2 * H, start + 2 * H, 24_000),
+			// two hours at $120 a minute, well inside
+			session(w, STEADY, 'Steady', start + 5 * 24 * H, start + 5 * 24 * H + 2 * H, 14_400)
+		]);
+		const col = await columns(w, 'owner', 'range=7d&sort=cashPerMin&minMinutes=60');
+		expect(col('name')).toEqual(['Steady', 'Straddler']);
+		expect(col('cash_per_min')).toEqual(['120', '100']);
+		// the playtime is still what was played inside the range
+		expect(col('playtime_min')).toEqual(['120', '120']);
+	});
+
+	test('a session still going when a season ended gives it no cash and none of its time; the next season gets both', async () => {
+		const env = await testEnv();
+		stubGateway();
+		const w = await seedWorld(env);
+		const now = Date.now();
+		const turn = now - 24 * H;
+		const [before, after] = [`before-${now}`, `after-${now}`];
+		await env.db.insert(seasons).values([
+			{ id: before, orgId: w.org.id, name: 'Before', startsAt: new Date(turn - 10 * 24 * H) },
+			{ id: after, orgId: w.org.id, name: 'After', startsAt: new Date(turn) }
+		]);
+		await env.db.insert(playerSessions).values([
+			// four hours at $100 a minute across the turn of the season
+			session(w, STRADDLER, 'Straddler', turn - 2 * H, turn + 2 * H, 24_000),
+			// two hours at $120 a minute before it
+			session(w, STEADY, 'Steady', turn - 5 * H, turn - 3 * H, 14_400)
+		]);
+		const ended = await columns(w, 'owner', `range=s:${before}&sort=cashPerMin&minMinutes=60`);
+		expect(ended('name')).toEqual(['Steady', 'Straddler']);
+		expect(ended('cash')).toEqual(['14400', '0']);
+		expect(ended('cash_per_min')).toEqual(['120', '']);
+		const next = await columns(w, 'owner', `range=s:${after}&sort=cashPerMin&minMinutes=60`);
+		expect(next('name')).toEqual(['Straddler']);
+		expect(next('cash_per_min')).toEqual(['100']);
 	});
 });

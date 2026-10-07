@@ -2,6 +2,7 @@
 import type { StatusStyle } from './status-styles';
 import type { OrgRole } from '$lib/server/access';
 import type { BuiltinRole, Capability } from '$lib/capabilities';
+import type { BanReason } from '$lib/ban-reasons';
 
 export type { OrgRole, Capability, BuiltinRole };
 
@@ -421,6 +422,12 @@ export interface DossierView {
 	steamId: string;
 	name: string;
 	names: string[];
+	/** the names the kill feed showed for them that were not the ones the server listed them under,
+	 *  newest first, on the servers the viewer can open; `holder` is another listed player whose name
+	 *  it read as */
+	feedNames: { name: string; holder: string | null; lastSeen: string }[];
+	/** how many there are in all: the list holds the newest 200 at most */
+	feedNamesTotal: number;
 	online: { serverId: string; serverName: string } | null;
 	steamEnabled: boolean;
 	steam: SteamView | null;
@@ -438,6 +445,8 @@ export interface DossierView {
 		reserve: ListEntryView | null;
 		canBan: boolean;
 		canReserve: boolean;
+		/** the org's quick reasons for the ban dialog; null unless canBan */
+		banReasons: BanReason[] | null;
 	};
 	summary: {
 		sessions: number;
@@ -488,7 +497,8 @@ export type TriggerKind =
 	| 'kill_rate'
 	| 'two_teams'
 	| 'kill_distance'
-	| 'afk_protection';
+	| 'afk_protection'
+	| 'name_change';
 
 export interface TriggerView {
 	id: string;
@@ -623,6 +633,8 @@ export interface OrgListsView {
 	membersReserved: boolean;
 	/** what a banned player is shown, see $lib/ban-message; null unless the reader edits the ban list */
 	banMessage: string | null;
+	/** the buttons under Reason in the ban dialog, see $lib/ban-reasons; null as for banMessage */
+	banReasons: BanReason[] | null;
 	servers: {
 		id: string;
 		name: string;
@@ -683,6 +695,8 @@ export interface ServerListsState {
 	orgId: string;
 	/** the org's ban message, for those who manage bans here or edit the org's ban list; else null */
 	banMessage: string | null;
+	/** the org's quick reasons for the ban dialog, to the same people as banMessage; else null */
+	banReasons: BanReason[] | null;
 	bans: Record<string, BanState>;
 	reserved: Record<string, ReservedSlotState>;
 	sync: {

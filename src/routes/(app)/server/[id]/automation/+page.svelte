@@ -160,6 +160,12 @@
 			blurb: 'Kick or flag joiners whose name uses characters or words this server does not allow.'
 		},
 		{
+			kind: 'name_change',
+			group: 'Players',
+			label: 'Name change watch',
+			blurb: "Flag or kick players who change their name mid-game, or take another player's."
+		},
+		{
 			kind: 'ping_kick',
 			group: 'Players',
 			label: 'High ping kick',
@@ -220,7 +226,9 @@
 					? 'kill everyone'
 					: action === 'rule_kill'
 						? 'kill'
-						: action;
+						: action === 'kill_distance_skip'
+							? 'not counted'
+							: action;
 	const label = (kind: TriggerKind) => KINDS.find((k) => k.kind === kind)?.label ?? kind;
 	const blurb = (kind: TriggerKind) => KINDS.find((k) => k.kind === kind)?.blurb ?? '';
 	/** Why a kind cannot run on this server yet, or '' when it can. */
@@ -229,6 +237,7 @@
 			case 'team_kill':
 			case 'kill_rate':
 			case 'kill_distance':
+			case 'name_change':
 				return data.feed
 					? ''
 					: 'Needs the kill feed, which is off on this server. Turn it on under Config.';
@@ -321,7 +330,10 @@
 		list.some((c) => c.toLowerCase() === cause.toLowerCase());
 	/** A kind that lacks what it needs stays in the menu, greyed, with the reason in a few words. */
 	const short = (kind: TriggerKind): string =>
-		kind === 'team_kill' || kind === 'kill_rate' || kind === 'kill_distance'
+		kind === 'team_kill' ||
+		kind === 'kill_rate' ||
+		kind === 'kill_distance' ||
+		kind === 'name_change'
 			? 'needs the kill feed'
 			: kind === 'risk_kick'
 				? 'needs a Steam key'
@@ -442,6 +454,8 @@
 		blocked: string;
 		allowed: string;
 		nameAction: 'kick' | 'alert';
+		takenOnly: boolean;
+		changes: number;
 		windowMinutes: number;
 		maxKills: number;
 		headshotPct: number;
@@ -587,11 +601,13 @@
 				'reason',
 				kind === 'name_filter'
 					? 'Your name is not allowed on this server: {why}.'
-					: kind === 'ping_kick'
-						? 'Ping too high for too long.'
-						: kind === 'kill_distance'
-							? distanceText(distanceAction)
-							: 'Your account does not meet this server’s requirements.'
+					: kind === 'name_change'
+						? 'Changing your name mid-game is not allowed here.'
+						: kind === 'ping_kick'
+							? 'Ping too high for too long.'
+							: kind === 'kill_distance'
+								? distanceText(distanceAction)
+								: 'Your account does not meet this server’s requirements.'
 			),
 			leadMinutes: n('leadMinutes', 30),
 			leadMessage: s(
@@ -623,8 +639,16 @@
 			builtinWords: b('builtinWords', !t),
 			blocked: Array.isArray(c.blocked) ? (c.blocked as string[]).join('\n') : '',
 			allowed: Array.isArray(c.allowed) ? (c.allowed as string[]).join('\n') : '',
-			nameAction: c.action === 'alert' ? 'alert' : 'kick',
-			windowMinutes: n('windowMinutes', 5),
+			// a new Name change rule only alerts until it is told to kick
+			nameAction:
+				c.action === 'alert' || c.action === 'kick'
+					? c.action
+					: kind === 'name_change'
+						? 'alert'
+						: 'kick',
+			takenOnly: b('takenOnly', false),
+			changes: n('changes', 1),
+			windowMinutes: n('windowMinutes', kind === 'name_change' ? 10 : 5),
 			maxKills: n('maxKills', 25),
 			headshotPct: n('headshotPct', 70),
 			headshotMinKills: n('headshotMinKills', 15),
@@ -720,6 +744,15 @@
 					builtinWords: f.builtinWords,
 					blocked: lines(f.blocked),
 					allowed: lines(f.allowed),
+					action: f.nameAction,
+					spareReserved: f.spareReserved,
+					reason: f.reason
+				};
+			case 'name_change':
+				return {
+					takenOnly: f.takenOnly,
+					changes: Number(f.changes),
+					windowMinutes: Number(f.windowMinutes),
 					action: f.nameAction,
 					spareReserved: f.spareReserved,
 					reason: f.reason
@@ -929,6 +962,16 @@
 					.filter(Boolean)
 					.join(' · ');
 			}
+			case 'name_change':
+				return [
+					c.takenOnly ? "taking another player's name" : 'any name change',
+					Number(c.changes) > 1 ? `${c.changes} changes in ${c.windowMinutes} min` : '',
+					c.action === 'kick'
+						? `kick${c.spareReserved ? ', flag reserved slots' : ''}`
+						: 'alert only'
+				]
+					.filter(Boolean)
+					.join(' · ');
 			case 'ping_kick':
 				return `ping over ${c.maxPingMs} ms for ${c.durationSeconds} s`;
 			case 'restart_notice':
@@ -1765,8 +1808,69 @@
 						</fieldset>
 					{/if}
 					<p class="note">
-						Names are checked as players join; a player who renames mid-session is caught on their
-						next join. Run the dry run before turning a word list loose.
+						Names are checked as players join and whenever they change. Run the dry run before
+						turning a word list loose.
+					</p>
+				{:else if f.kind === 'name_change'}
+					<fieldset class="space-y-1.5 text-[13px]">
+						<legend class="field-label">Count</legend>
+						<label class="flex items-center gap-2"
+							><input type="radio" value={false} bind:group={f.takenOnly} /> Every name change</label
+						>
+						<label class="flex items-center gap-2"
+							><input type="radio" value={true} bind:group={f.takenOnly} /> Only a change to another player's
+							name</label
+						>
+						<div class="flex flex-wrap items-center gap-2 border-t border-black pt-2">
+							<input
+								class="input w-20 text-right"
+								type="number"
+								min="1"
+								max="20"
+								bind:value={f.changes}
+								aria-label="Act at, name changes"
+								required
+							/>
+							or more changes within
+							<input
+								class="input w-20 text-right"
+								type="number"
+								min="1"
+								max="120"
+								bind:value={f.windowMinutes}
+								aria-label="Within, minutes"
+								required
+							/>
+							minutes
+						</div>
+					</fieldset>
+					<fieldset class="space-y-1.5 text-[13px]">
+						<legend class="field-label">Then</legend>
+						<label class="flex flex-wrap items-center gap-2"
+							><input type="radio" value="alert" bind:group={f.nameAction} /> Alert only
+							<span class="text-mist-600">(audit trail and Discord, nobody is kicked)</span></label
+						>
+						<label class="flex items-center gap-2"
+							><input type="radio" value="kick" bind:group={f.nameAction} /> Kick the player</label
+						>
+						{#if f.nameAction === 'kick'}
+							<label class="flex items-center gap-2 border-t border-black pt-2"
+								><input type="checkbox" bind:checked={f.spareReserved} /> Flag players with a reserved
+								slot instead</label
+							>
+						{/if}
+					</fieldset>
+					{#if f.nameAction === 'kick'}
+						<fieldset class="space-y-2">
+							<legend class="field-label">Kick reason, shown to the player</legend>
+							<input class="input" type="text" bind:value={f.reason} maxlength="200" />
+							{@render placeholders('name_change', [f.reason])}
+						</fieldset>
+					{/if}
+					<p class="note">
+						Names come from the kill feed: each time a player kills or dies, the name it shows is
+						held against the one the server lists them under. A clan tag put on, taken off or
+						swapped is not a change.
 					</p>
 				{:else if f.kind === 'ping_kick'}
 					<fieldset class="space-y-2">
@@ -1830,7 +1934,9 @@
 							<p class="text-[12px] text-mist-600">
 								Nobody playing is moved mid-match. An arrival who would put their side past the gap
 								goes to the lighter side, a player who switches onto the bigger side is put back,
-								and a new match is evened up.
+								and a new match is evened up{f.clans
+									? ', keeping clans together where the numbers allow'
+									: ''}.
 							</p>
 						{/if}
 					</fieldset>
@@ -1850,8 +1956,7 @@
 							{#each FACTIONS as x (x)}<option value={x}></option>{/each}
 						</datalist>
 						<p class="text-[12px] text-mist-600">
-							Everyone on it is moved to the smaller other side (or their clan's, within the gap)
-							and respawns there.
+							Everyone on it is moved to the smaller other side (or their clan's, within the gap).
 						</p>
 					</fieldset>
 					<fieldset class="space-y-2">
@@ -1902,11 +2007,16 @@
 						move nobody</label
 					>
 					<p class="note">
-						Moves go out a few at a time as the player list refreshes; each kills the player so they
-						respawn on the new side. A player asked to move three times in ten minutes is left where
-						they are until the ten minutes pass.{f.balance
-							? ''
-							: ' Players are never moved between the open sides.'} One rule per server.
+						Moves go out a few at a time as the player list refreshes, without killing the player.
+						{#if f.balance}
+							A player who switches onto the bigger side is put back every time. A player asked to
+							move three times in ten minutes for any other reason, or put back three times without
+							it taking, is left where they are until the ten minutes pass.
+						{:else}
+							A player asked to move three times in ten minutes is left where they are until the ten
+							minutes pass. Players are never moved between the open sides.
+						{/if}
+						One rule per server.
 					</p>
 				{:else if f.kind === 'team_kill'}
 					<fieldset class="space-y-2">
@@ -2449,8 +2559,10 @@
 							<td>{d.triggerName}</td>
 							<td class="font-mono text-[12px]">{actionLabel(d.action)}</td>
 							<td class="font-mono text-[12px]"
-								>{#if isSteamId(d.target)}<a class="link" href="/server/{id}/players/{d.target}"
-										>{d.target}</a
+								>{#if isSteamId(d.target)}<a
+										class="link"
+										href="/server/{id}/players/{d.target}"
+										data-sveltekit-preload-data="tap">{d.target}</a
 									>{:else}{d.target}{/if}</td
 							>
 							<td

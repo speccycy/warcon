@@ -88,7 +88,12 @@ describe.skipIf(!hasTestDb)('faction colours and scores from the game', () => {
 	});
 
 	test('the boards read a score that is not a number as no score, not as an error', async () => {
-		const board = await loadBoard(env, [w.server.id], { ...DEFAULT_BOARD_QUERY, minMinutes: 0 });
+		const board = await loadBoard(
+			env,
+			[w.server.id],
+			{ ...DEFAULT_BOARD_QUERY, range: '30d', minMinutes: 0 },
+			w.org.id
+		);
 		const row = board.rows.find((r) => r.steamId === PLAYER);
 		expect([row?.matches, row?.wins, row?.losses, row?.draws]).toEqual([1, 0, 0, 0]);
 	});

@@ -28,6 +28,7 @@ export const load: PageServerLoad = (event) =>
 		const [career, profiles, combat] = await Promise.all([
 			loadCareer(env, {
 				serverId: ps.server.id,
+				orgId: ps.org.id,
 				ids,
 				nameOf: new Map(orgServers.map((s) => [s.id, s.name])),
 				steamId

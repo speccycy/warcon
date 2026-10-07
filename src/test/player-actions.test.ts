@@ -117,6 +117,8 @@ describe.skipIf(!hasTestDb)('Kick, Kill and Move apart', () => {
 			['kill_rate', { maxKills: 20 }, 'players.kick'],
 			['kill_distance', { causes: [DEFIB], action: 'flag' }, 'players.kick'],
 			['kill_distance', { causes: [DEFIB], action: 'kick' }, 'players.kick'],
+			['name_change', { takenOnly: true }, 'players.kick'],
+			['name_change', { action: 'kick' }, 'players.kick'],
 			['two_teams', { closedFaction: 'Lonestar' }, 'players.move']
 		];
 		const routes = ['servers/[id]/triggers', 'servers/[id]/triggers/dry-run'];

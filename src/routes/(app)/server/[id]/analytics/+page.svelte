@@ -572,6 +572,7 @@
 								<td
 									><a
 										href="/server/{encodeURIComponent(id)}/players/{p.steamId}"
+										data-sveltekit-preload-data="tap"
 										class="hover:text-accent hover:underline">{p.name}</a
 									>
 									<span class="font-mono text-[12px] text-mist-600">{p.steamId}</span></td

@@ -176,7 +176,8 @@ describe.skipIf(!hasTestDb)('outside review: against the database', () => {
 	});
 
 	test('by design: a public leaderboard row carries the SteamID (the career link) and the in-game cash', async () => {
-		const board = (await get('api/public/servers/[id]/leaderboard', null, 'minMinutes=0')).body as {
+		const board = (await get('api/public/servers/[id]/leaderboard', null, 'minMinutes=0&range=30d'))
+			.body as {
 			rows: Record<string, unknown>[];
 		};
 		const row = board.rows.find((r) => r.name === 'Reader')!;

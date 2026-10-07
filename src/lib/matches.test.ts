@@ -1,5 +1,13 @@
 import { describe, expect, test } from 'bun:test';
-import { abandoned, awardsFor, durationOf, perMinute, type MatchLine } from './matches';
+import {
+	abandoned,
+	awardsFor,
+	durationOf,
+	matchTeams,
+	perMinute,
+	type MatchLine,
+	type MatchView
+} from './matches';
 
 const line = (steamId: string, extra: Partial<MatchLine> = {}): MatchLine => ({
 	steamId,
@@ -70,5 +78,64 @@ describe('a match', () => {
 	test('kills per minute needs time on', () => {
 		expect(perMinute(30, 1800)).toBe(1);
 		expect(perMinute(3, 0)).toBeNull();
+	});
+});
+
+describe('the scoreboard by side', () => {
+	const view = (
+		finalScores: { name: string; score: number }[] | null,
+		factions = ['Valkyra', 'Manticore', 'Lonestar']
+	): Pick<MatchView, 'match' | 'factions'> => ({
+		match: {
+			id: 1,
+			startedAt: '2026-10-06T10:00:00Z',
+			endedAt: '2026-10-06T11:00:00Z',
+			map: 'Ozeti',
+			experiences: null,
+			lighting: null,
+			peakPlayers: 6,
+			players: 6,
+			finalScores,
+			winner: finalScores?.length ? finalScores[0].name : null
+		},
+		factions: factions.map((name) => ({ name, colorHex: null }))
+	});
+	const lines = [
+		line('a', { faction: 'Lonestar', result: 'loss' }),
+		line('b', { faction: 'Valkyra', result: 'win' }),
+		line('c', { faction: null, result: null }),
+		line('d', { faction: 'Manticore', result: 'loss' }),
+		line('e', { faction: 'Valkyra', result: 'win' }),
+		line('f', { faction: 'Lonestar', result: 'loss' })
+	];
+	const shape = (teams: ReturnType<typeof matchTeams>) =>
+		teams.map((t) => [t.name, t.result, t.lines.map((l) => l.steamId).join('')]);
+
+	test('the sides by final score, each in the order it was given, then the unassigned', () => {
+		const scores = [
+			{ name: 'Lonestar', score: 55 },
+			{ name: 'Valkyra', score: 100 },
+			{ name: 'Manticore', score: 61 }
+		];
+		expect(shape(matchTeams(view(scores), lines))).toEqual([
+			['Valkyra', 'win', 'be'],
+			['Manticore', 'loss', 'd'],
+			['Lonestar', 'loss', 'af'],
+			[null, null, 'c']
+		]);
+	});
+
+	test('scoreboard order without scores; a side nobody ended on is left out, one off the board follows', () => {
+		const odd = [
+			...lines.filter((l) => l.faction !== 'Manticore'),
+			line('g', { faction: 'White' })
+		];
+		expect(shape(matchTeams(view(null, ['Lonestar', 'Valkyra', 'Manticore']), odd))).toEqual([
+			['Lonestar', 'loss', 'af'],
+			['Valkyra', 'win', 'be'],
+			['White', 'win', 'g'],
+			[null, null, 'c']
+		]);
+		expect(matchTeams(view(null), [])).toEqual([]);
 	});
 });

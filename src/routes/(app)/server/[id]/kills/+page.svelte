@@ -188,8 +188,10 @@
 						<td class="font-mono text-[12px] whitespace-nowrap text-mist-400">{fmtTime(k.ts)}</td>
 						<td>
 							{#if k.killer}
-								<a href={dossier(k.killer.steamId)} class="hover:text-accent hover:underline"
-									>{k.killer.name}</a
+								<a
+									href={dossier(k.killer.steamId)}
+									data-sveltekit-preload-data="tap"
+									class="hover:text-accent hover:underline">{k.killer.name}</a
 								>
 								{#if k.killer.faction}<FactionChip
 										faction={k.killer.faction}
@@ -205,8 +207,10 @@
 							{:else}<span class="text-mist-600">—</span>{/if}
 						</td>
 						<td>
-							<a href={dossier(k.victim.steamId)} class="hover:text-accent hover:underline"
-								>{k.victim.name}</a
+							<a
+								href={dossier(k.victim.steamId)}
+								data-sveltekit-preload-data="tap"
+								class="hover:text-accent hover:underline">{k.victim.name}</a
 							>
 							{#if k.victim.faction}<FactionChip
 									faction={k.victim.faction}

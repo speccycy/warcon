@@ -183,6 +183,40 @@ export function awardsFor(lines: MatchLine[], durationSeconds: number): MatchAwa
 	return out;
 }
 
+/** One side's players in a match, as its scoreboard shows them; `name` null for the unassigned. */
+export interface MatchTeam {
+	name: string | null;
+	result: MatchResult;
+	lines: MatchLine[];
+}
+
+/**
+ * A match's players by the side they ended on: the sides by final score, highest first (in
+ * scoreboard order when the match has no scores), then any other side a player was on, then the
+ * players never on a side. Each side keeps the order of `lines`, so one sort orders every table.
+ */
+export function matchTeams(
+	view: Pick<MatchView, 'match' | 'factions'>,
+	lines: MatchLine[]
+): MatchTeam[] {
+	const scored = [...(view.match.finalScores ?? [])].sort((a, b) => b.score - a.score);
+	const order = (scored.length ? scored : view.factions).map((f) => f.name);
+	const sides = new Map<string, MatchLine[]>();
+	const unassigned: MatchLine[] = [];
+	for (const l of lines) {
+		if (!l.faction) unassigned.push(l);
+		else sides.get(l.faction)?.push(l) ?? sides.set(l.faction, [l]);
+	}
+	const known = order.filter((name) => sides.has(name));
+	const others = [...sides.keys()].filter((name) => !order.includes(name)).sort();
+	const teams: MatchTeam[] = [...known, ...others].map((name) => {
+		const of = sides.get(name)!;
+		return { name, result: of[0].result, lines: of };
+	});
+	if (unassigned.length) teams.push({ name: null, result: null, lines: unassigned });
+	return teams;
+}
+
 /** "1 h 42 min", "47 min", "40 s": how long a match lasted, in its two coarsest units. */
 export function fmtLength(seconds: number): string {
 	const s = Math.max(0, Math.round(seconds));

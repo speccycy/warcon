@@ -54,7 +54,11 @@
 		<span class="field-label">Most killed</span>
 		{#each combat.victims as v (v.steamId)}
 			<div class="flex justify-between text-[13px]">
-				<a href={hrefFor(v.steamId)} class="hover:text-accent hover:underline">{v.name}</a>
+				<a
+					href={hrefFor(v.steamId)}
+					data-sveltekit-preload-data="tap"
+					class="hover:text-accent hover:underline">{v.name}</a
+				>
 				<span class="font-mono text-mist-400 tabular">{v.kills}</span>
 			</div>
 		{:else}<div class="text-[13px] text-mist-600">Nobody yet.</div>{/each}
@@ -63,7 +67,11 @@
 		<span class="field-label">Nemeses</span>
 		{#each combat.nemeses as n (n.steamId)}
 			<div class="flex justify-between text-[13px]">
-				<a href={hrefFor(n.steamId)} class="hover:text-accent hover:underline">{n.name}</a>
+				<a
+					href={hrefFor(n.steamId)}
+					data-sveltekit-preload-data="tap"
+					class="hover:text-accent hover:underline">{n.name}</a
+				>
 				<span class="font-mono text-mist-400 tabular">{n.deaths}</span>
 			</div>
 		{:else}<div class="text-[13px] text-mist-600">Nobody yet.</div>{/each}

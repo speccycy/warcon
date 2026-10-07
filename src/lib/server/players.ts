@@ -14,6 +14,7 @@ import {
 	type SessionUser
 } from './access';
 import { orgListMembership } from './lists';
+import { banReasonsFor } from './ban-reasons';
 import { kills, playerMarks, playerNotes, playerSessions, serverBans, servers } from './db/schema';
 import { getProfiles, isSteamId, steamEnabled, type SteamProfileRow } from './steam';
 import { accountAgeDays, assessRisk, namesResemble, type Risk, type RiskPerformance } from './risk';
@@ -28,6 +29,7 @@ import type {
 } from '$lib/types';
 import { killView } from './feed';
 import { latestNames } from './sessions';
+import { feedNamesOf } from './aliases';
 
 export { requireSteamId } from './steam';
 
@@ -292,7 +294,8 @@ export async function dossier(
 		listsRole,
 		allOrgServers,
 		combat,
-		performance
+		performance,
+		feedNames
 	] = await Promise.all([
 		getProfiles(env, [steamId], {
 			refresh: !!opts.refreshSteam,
@@ -322,29 +325,37 @@ export async function dossier(
 		listsRoleFor(env, user, server.orgId),
 		orgServers(env, server.orgId),
 		playerCombat(env, ids, nameOf, steamId),
-		riskPerformanceFor(env, ids, [steamId])
+		riskPerformanceFor(env, ids, [steamId]),
+		feedNamesOf(env, ids, steamId)
 	]);
 	const l = local.get(steamId);
 	const admin = access.caps.has('players.notes.manage');
 	// What staff wrote about the player is for those who may write it; an org list entry (its
-	// reason, who added it, where it stands on every server) for those who may edit that list.
+	// reason, who added it, where it stands on every server) for those who may edit that list,
+	// and the org's quick reasons for those who may ban on its list.
 	const staff = admin || access.caps.has('players.notes');
-	const membership =
+	const canBan = !!listsRole?.kinds.includes('ban');
+	const [membership, banReasons] = await Promise.all([
 		org && listsRole
-			? await orgListMembership(env, org, steamId, listsRole.kinds)
-			: { ban: null, reserve: null };
+			? orgListMembership(env, org, steamId, listsRole.kinds)
+			: { ban: null, reserve: null },
+		canBan ? banReasonsFor(env, server.orgId) : null
+	]);
 	return {
 		steamId,
 		name,
 		names: names.map((n) => n.name),
+		feedNames: feedNames.names,
+		feedNamesTotal: feedNames.total,
 		online: online
 			? { serverId: online.serverId, serverName: nameOf.get(online.serverId) || '' }
 			: null,
 		orgServerCount: allOrgServers.length,
 		orgLists: {
 			...membership,
-			canBan: !!listsRole?.kinds.includes('ban'),
-			canReserve: !!listsRole?.kinds.includes('reserve')
+			canBan,
+			canReserve: !!listsRole?.kinds.includes('reserve'),
+			banReasons
 		},
 		steamEnabled: steamEnabled(env),
 		steam: steamView(profiles.get(steamId)),

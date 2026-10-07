@@ -41,11 +41,13 @@
 		hrefFor={(steamId) => `${base}/players/${steamId}`}
 		orgName={data.heading.orgName}
 		orgScope={data.orgScope}
+		hidden={data.hidden}
 		relative
 	/>
 	<p class="note">
 		Kills and deaths from the game's scoreboard, match by match; headshots, team kills and streaks
-		from the kill feed; playtime from time seen on the server. A match counts once it has ended.
-		Names open a player's career.
+		from the kill feed; playtime from time seen on the server. K/h is kills per hour of that
+		playtime and $/min cash per minute of the sessions the cash came from, seed time left out of
+		both. A match counts once it has ended. Names open a player's career.
 	</p>
 </div>

@@ -13,6 +13,7 @@
 	import SortHeader from '$lib/components/SortHeader.svelte';
 	import type { SortLike } from '$lib/table.svelte';
 	import type { SeenPlayer, SeenSort } from '$lib/server/seen';
+	import { feedNamesLine } from '$lib/feed-names';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -241,6 +242,7 @@
 									<div class="flex flex-wrap items-center gap-1.5">
 										<a
 											href={dossier(p)}
+											data-sveltekit-preload-data="tap"
 											class="truncate font-medium hover:text-accent hover:underline"
 											title="Open dossier">{p.name}</a
 										>
@@ -251,6 +253,16 @@
 											>{/if}
 										{#if p.watched}<Badge tone="warn">watch</Badge>{/if}
 									</div>
+									{#if p.feedNames.length}
+										{@const line = feedNamesLine(p.feedNames, f.q)}
+										<div class="truncate text-[12px] text-mist-400" title={p.feedNames.join(', ')}>
+											in the kill feed as {#each line.names as n, i (n.name)}<span
+													class={n.hit ? 'font-semibold text-accent' : ''}>{n.name}</span
+												>{i < line.names.length - 1
+													? ', '
+													: ''}{/each}{#if line.more}{` and ${line.more} more`}{/if}
+										</div>
+									{/if}
 									{#if p.aliases.length}
 										<div class="truncate text-[12px] text-mist-400" title={p.aliases.join(', ')}>
 											also {p.aliases.slice(0, 4).join(', ')}{#if p.aliases.length > 4}
@@ -343,6 +355,7 @@
 			steamId={banning.steamId}
 			name={banning.name}
 			canOrg={canBan}
+			reasons={data.lists.banReasons ?? []}
 			onclose={() => (banning = null)}
 			ondone={() => invalidateAll()}
 		/>

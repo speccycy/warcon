@@ -92,6 +92,7 @@ describe.skipIf(!hasTestDb)('career and boards from the match rows', () => {
 
 		const career = await loadCareer(env, {
 			serverId: w.server.id,
+			orgId: w.org.id,
 			ids: [w.server.id],
 			nameOf: new Map(),
 			steamId: STEAM
@@ -120,7 +121,8 @@ describe.skipIf(!hasTestDb)('career and boards from the match rows', () => {
 		const board = await loadBoard(
 			env,
 			[w.server.id],
-			parseBoardQuery(new URLSearchParams('minMinutes=0'))
+			parseBoardQuery(new URLSearchParams('minMinutes=0&range=30d')),
+			w.org.id
 		);
 		const row = board.rows.find((r) => r.steamId === STEAM);
 		expect(row).toMatchObject({
@@ -183,7 +185,8 @@ describe.skipIf(!hasTestDb)('career and boards from the match rows', () => {
 		const board = await loadBoard(
 			env,
 			[w.server.id],
-			parseBoardQuery(new URLSearchParams('minMinutes=0&sort=perHour'))
+			parseBoardQuery(new URLSearchParams('minMinutes=0&range=30d&sort=perHour')),
+			w.org.id
 		);
 		expect(board.rows.map((r) => r.steamId)).toEqual([STEAM, OTHER]);
 	});

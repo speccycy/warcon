@@ -5,7 +5,9 @@
 // kill with a weapon or a vehicle it does not allow. Kills are counted per match, as the Team kill
 // limit counts them, rather than within minutes: the feed gives no kill a time the panel can trust
 // across batches (a batch the game sends again arrives late, with only the match clock), and a
-// match is what the game itself numbers. No database, no game server; the live path
+// match is what the game itself numbers. A kill that comes just after the killer's own death is not
+// counted: the player is dead, and the game credits a vehicle's shell that lands after the vehicle
+// was destroyed to the gunner's own weapon. No database, no game server; the live path
 // (feed-events.ts) and the dry run (triggers.ts) run the same step.
 import { ApiError, int, str } from './http';
 import { causeTags } from './cause-tags';
@@ -15,6 +17,11 @@ import type { BanScope } from './rule-ban';
 
 /** The outbox action of a Kill distance flag: a panel action, nothing is sent to the game. */
 export const KILL_DISTANCE_FLAG = 'kill_distance_flag';
+/**
+ * The outbox action that notes a kill a rule left out because it came just after the killer's own
+ * death (killsAfterDeath): a panel action whose audit row is the whole delivery, kept off Discord.
+ */
+export const KILL_DISTANCE_SKIP = 'kill_distance_skip';
 
 export type KillDistanceAction = 'flag' | 'warn' | 'kill' | 'kick' | 'ban';
 
@@ -91,15 +98,16 @@ function causeSet(cfg: KillDistanceConfig): Set<string> {
 }
 
 /**
- * A kill the rule counts: a player's, not a suicide, with one of its weapons, from at least its
- * distance. From 0 m a kill the feed sends without a distance counts too: a vehicle blown up with
- * its crew inside, a roadkill.
+ * A kill the rule counts: a player's, not a suicide, not one made just after the killer's own death
+ * (killsAfterDeath), with one of its weapons, from at least its distance. From 0 m a kill the feed
+ * sends without a distance counts too: a vehicle blown up with its crew inside, a roadkill.
  */
 export function countsForDistance(
 	cfg: KillDistanceConfig,
 	k: {
 		killer: string | null | undefined;
 		suicide: boolean;
+		afterOwnDeath: boolean;
 		cause: string | null;
 		distanceM: number | null;
 	}
@@ -107,11 +115,90 @@ export function countsForDistance(
 	return (
 		!!k.killer &&
 		!k.suicide &&
+		!k.afterOwnDeath &&
 		(cfg.minDistanceM <= 0 ||
 			(typeof k.distanceM === 'number' && k.distanceM >= cfg.minDistanceM)) &&
 		!!k.cause &&
 		causeSet(cfg).has(k.cause.toLowerCase())
 	);
+}
+
+/**
+ * How long after a player's own death a kill the feed credits to them is not counted, in seconds of
+ * the match clock. A dead player is not firing: the kill is a round or a charge already on its way,
+ * and its cause cannot be trusted. A vehicle's shell that lands after the vehicle was destroyed
+ * comes credited to the gunner's own weapon, from wherever the gunner is by then (an M4 kill from
+ * 2,300 m). On the hosted feed every such kill came within 35 s of the death.
+ */
+export const AFTER_DEATH_S = 60;
+/** How long a death is kept on the panel's clock: past the window, with room for a late batch. */
+const DEATH_KEPT_MS = 2 * AFTER_DEATH_S * 1000;
+
+/** Each player's last death the feed told of: on the match clock (s), and when it came in (ms). */
+export type LastDeaths = Map<string, { clock: number; at: number }>;
+
+export interface FeedDeath {
+	eventId: string;
+	/** seconds on the match clock */
+	eventTime: number;
+	killer: string | null | undefined;
+	victim: string;
+}
+
+/**
+ * Takes in a batch of kills that came in at `at` (ms), in the order the game played them: notes
+ * each victim's death, and returns the kills made within AFTER_DEATH_S after the killer's own last
+ * death, by event id, with how many seconds after it. Two players who kill each other at the same
+ * instant both count. The match clock starts again at a new match, so a death later on it than the
+ * kill is not the one before it.
+ */
+export function killsAfterDeath(
+	deaths: LastDeaths,
+	inOrder: FeedDeath[],
+	at: number
+): Map<string, number> {
+	for (const [steamId, d] of deaths) if (at - d.at > DEATH_KEPT_MS) deaths.delete(steamId);
+	const out = new Map<string, number>();
+	for (const k of inOrder) {
+		const d = k.killer ? deaths.get(k.killer) : undefined;
+		if (d && k.eventTime > d.clock && k.eventTime - d.clock <= AFTER_DEATH_S)
+			out.set(k.eventId, k.eventTime - d.clock);
+		deaths.set(k.victim, { clock: k.eventTime, at });
+	}
+	return out;
+}
+
+/**
+ * What the audit trail says of a kill a rule left out because it came just after the killer's own
+ * death: the kill, by whom, and how long after they died.
+ */
+export function notCountedMessage(
+	name: string,
+	cause: string | null,
+	distanceM: number | null,
+	afterS: number
+): string {
+	const what =
+		distanceM === null
+			? `${causeLabel(cause)} kill`
+			: `${causeLabel(cause)} kill from ${Math.round(distanceM)} m`;
+	return `Not counted: ${what} by ${name}, ${afterS.toFixed(1)} s after they died`;
+}
+
+/**
+ * killsAfterDeath over a window, batch by batch: `events` in the order they came in (`at`, then
+ * the match clock), the kills of one batch sharing their `at`.
+ */
+export function killsAfterDeathReplay(events: (FeedDeath & { at: number })[]): Set<string> {
+	const deaths: LastDeaths = new Map();
+	const out = new Set<string>();
+	for (let i = 0; i < events.length;) {
+		let j = i;
+		while (j < events.length && events[j].at === events[i].at) j++;
+		for (const id of killsAfterDeath(deaths, events.slice(i, j), events[i].at).keys()) out.add(id);
+		i = j;
+	}
+	return out;
 }
 
 /**

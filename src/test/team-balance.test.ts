@@ -178,6 +178,17 @@ describe.skipIf(!hasTestDb)('Team balance against the panel', () => {
 		expect(await look(r, teams(V))).toEqual([MOVED]);
 	});
 
+	test('a player who keeps switching onto the bigger side is put back at every switch', async () => {
+		const r = rule();
+		expect(await look(r, teams())).toEqual([]);
+		for (let i = 0; i < 5; i++) {
+			// onto Valkyra, 8 v 4: put back
+			expect(await look(r, teams(V))).toEqual([MOVED]);
+			// and seen back on Manticore, where the move put them
+			expect(await look(r, teams())).toEqual([]);
+		}
+	});
+
 	test('a move from the Players tab or the API is kept; one the game refused is not', async () => {
 		const r = rule();
 		expect(await look(r, teams())).toEqual([]);

@@ -20,6 +20,7 @@
 		['/servers', 'Servers', 'any'],
 		['/access', 'Access', 'owner'],
 		['/roles', 'Roles', 'owner'],
+		['/seasons', 'Seasons', 'owner'],
 		['/players', 'Players', 'any'],
 		['/bans', 'Ban list', 'ban'],
 		['/reserved', 'Reserved slots', 'reserve']

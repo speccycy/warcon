@@ -1,14 +1,22 @@
 // The leaderboard as a CSV file: the board as it is set (scope, range, sort, playtime floor), from
 // the top, every page of it up to EXPORT_ROWS players. The same check as the board (View); the
 // organisation scope covers the servers the caller can open, as the board's does.
-// ?scope=server|org&range=7d|30d|90d|all&sort=<metric>&dir=asc|desc&minMinutes=60
+// ?scope=server|org&range=current|s:<season>|7d|30d|90d|all&sort=<metric>&dir=asc|desc&minMinutes=60
 import { getEnv } from '$lib/server/env';
 import { param, route } from '$lib/server/http';
 import { accessibleServers, getOrg, requireServerCap } from '$lib/server/access';
 import { assertRate } from '$lib/server/ratelimit';
 import { exportBoard } from '$lib/server/leaderboards';
+import { boardWindow } from '$lib/server/seasons';
 import { csvCell, fileSlug } from '$lib/server/csv';
-import { kdRatio, parseBoardQuery, perHour, winRate, type BoardRow } from '$lib/leaderboard';
+import {
+	kdRatio,
+	parseBoardQuery,
+	perHour,
+	perMinute,
+	winRate,
+	type BoardRow
+} from '$lib/leaderboard';
 
 /** Rounded to `digits` places; empty where the ratio has nothing to divide by. */
 const round = (v: number | null, digits: number): number | null =>
@@ -37,6 +45,7 @@ const COLUMNS: [string, (r: BoardRow) => unknown][] = [
 	['draws', (r) => r.draws],
 	['win_pct', (r) => percent(winRate(r.wins, r.losses, r.draws))],
 	['cash', (r) => r.cash],
+	['cash_per_min', (r) => round(perMinute(r.cash, r.cashMinutes, r.seedMinutes), 1)],
 	['last_seen', (r) => r.lastSeen]
 ];
 
@@ -55,11 +64,13 @@ export const GET = route(async (event) => {
 	const ids = org
 		? (await accessibleServers(env, user, server.orgId)).map((s) => s.id)
 		: [server.id];
-	const rows = await exportBoard(env, ids, q);
+	const win = await boardWindow(env, server.orgId, q.range);
+	const rows = await exportBoard(env, ids, q, win);
 	const lines = [COLUMNS.map(([name]) => name).join(',')];
 	for (const r of rows) lines.push(COLUMNS.map(([, value]) => csvCell(value(r))).join(','));
 	const day = new Date().toISOString().slice(0, 10);
-	const file = `${fileSlug(org?.name ?? server.name)}-leaderboard-${q.range}-${day}.csv`;
+	const span = win.season ? fileSlug(win.season.name) || 'season' : win.range;
+	const file = `${fileSlug(org?.name ?? server.name)}-leaderboard-${span}-${day}.csv`;
 	return new Response(lines.join('\r\n'), {
 		headers: {
 			'content-type': 'text/csv; charset=utf-8',

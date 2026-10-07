@@ -529,6 +529,8 @@ describe.skipIf(!hasTestDb)('access', () => {
 				['kill_distance', { causes: [DEFIB], action: 'ban', banScope: 'org' }, 'lists.ban'],
 				['two_teams', { closedFaction: 'Lonestar' }, 'players.move'],
 				['afk_protection', {}, 'players.kill'],
+				['name_change', { takenOnly: true }, 'players.kick'],
+				['name_change', { action: 'kick' }, 'players.kick'],
 				['seed_reward', { minutes: 60, scope: 'server' }, 'slots.manage'],
 				['seed_reward', { minutes: 60, scope: 'org' }, 'lists.reserve']
 			];
@@ -726,6 +728,61 @@ describe.skipIf(!hasTestDb)('access', () => {
 			expect(made.status).toBe(201);
 			const triggerId = (made.body as { trigger: { id: string } }).trigger.id;
 			// Automation without Kick: a flag-only rule is still not theirs to make, replay or enable.
+			await env.db
+				.update(orgRoles)
+				.set({ capabilities: ['server.view', 'automation.manage'] })
+				.where(eq(orgRoles.id, w.roles.viewer));
+			const expected: Record<PrincipalName, number> = {
+				anon: 401,
+				stranger: 404,
+				outsider: 404,
+				member: 404,
+				viewer: 403,
+				operator: 403,
+				admin: 200,
+				elsewhere: 404,
+				orgBans: 403,
+				orgSlots: 403,
+				owner: 200,
+				site: 200,
+				keyView: 403,
+				keyAll: 200,
+				keyElsewhere: 404,
+				keyBans: 403
+			};
+			for (const [who, status] of Object.entries(expected) as [PrincipalName, number][]) {
+				const got = [
+					await api(w, who, 'POST api/servers/[id]/triggers/dry-run', {
+						params: { id: w.server.id },
+						body
+					}),
+					await api(w, who, 'PATCH api/servers/[id]/triggers/[triggerId]', {
+						params: { id: w.server.id, triggerId },
+						body: { enabled: true }
+					}),
+					await api(w, who, 'POST api/servers/[id]/triggers', { params: { id: w.server.id }, body })
+				].map((r) => r.status);
+				// a create that gets through answers 201
+				expect([who, ...got]).toEqual([who, status, status, status === 200 ? 201 : status]);
+			}
+			// The rule's id under another server's path is not found, even for its org's owner.
+			const moved = await api(w, 'owner', 'PATCH api/servers/[id]/triggers/[triggerId]', {
+				params: { id: w.otherServer.id, triggerId },
+				body: { enabled: false }
+			});
+			expect(moved.status).toBe(404);
+		});
+
+		test('a Name change rule: who may save, dry-run and switch it on', async () => {
+			const w = await seedWorld(env);
+			const body = { kind: 'name_change', config: { takenOnly: true } };
+			const made = await api(w, 'owner', 'POST api/servers/[id]/triggers', {
+				params: { id: w.server.id },
+				body
+			});
+			expect(made.status).toBe(201);
+			const triggerId = (made.body as { trigger: { id: string } }).trigger.id;
+			// Automation without Kick: an alert-only rule is still not theirs to make, replay or enable.
 			await env.db
 				.update(orgRoles)
 				.set({ capabilities: ['server.view', 'automation.manage'] })

@@ -1,16 +1,23 @@
 <script lang="ts">
 	// A match as its page shows it, in the panel and on the public site: the header (map, mode,
 	// when, how long, how many), the final scores, the score over time, the awards and the
-	// scoreboard: every player's line, sortable, kills first. The page renders the match's kill
-	// feed under it.
+	// scoreboard: one table per side, the winner first, then anyone never on a side; one sort
+	// orders them all, kills first, and on a wide screen their columns line up. The page renders
+	// the match's kill feed under it.
 	import SortHeader from '$lib/components/SortHeader.svelte';
-	import FactionChip from '$lib/components/FactionChip.svelte';
 	import ScoreTimeline from '$lib/components/ScoreTimeline.svelte';
 	import { fmtCash } from '$lib/cash';
 	import { expSetLabel, factionColor, fmtNum, fmtTime, mapName, prettify } from '$lib/format';
 	import { kdRatio } from '$lib/leaderboard';
 	import { DEFAULT_SCORE_CAP } from '$lib/match';
-	import { durationOf, fmtLength, perMinute, type MatchLine, type MatchView } from '$lib/matches';
+	import {
+		durationOf,
+		fmtLength,
+		matchTeams,
+		perMinute,
+		type MatchLine,
+		type MatchView
+	} from '$lib/matches';
 	import { TableSort } from '$lib/table.svelte';
 
 	let {
@@ -45,7 +52,6 @@
 	const sort = new TableSort<MatchLine>(
 		{
 			name: { by: (l) => l.name },
-			faction: { by: (l) => l.faction },
 			seconds: { by: (l) => l.seconds, dir: 'desc' },
 			kills: { by: (l) => l.kills, dir: 'desc' },
 			deaths: { by: (l) => l.deaths, dir: 'desc' },
@@ -59,7 +65,7 @@
 		},
 		{ key: 'kills', dir: 'desc' }
 	);
-	let rows = $derived(sort.sorted(view.lines));
+	let teams = $derived(matchTeams(view, sort.sorted(view.lines)));
 	const RESULT = { win: 'text-ok', loss: 'text-danger', draw: 'text-mist-400' } as const;
 </script>
 
@@ -130,6 +136,7 @@
 				<div class="mt-1 font-display text-xl font-semibold tabular">{a.value}</div>
 				<a
 					href={hrefFor(a.steamId)}
+					data-sveltekit-preload-data="tap"
 					class="block truncate text-[12.5px] text-mist-400 hover:text-accent hover:underline"
 					>{a.name}</a
 				>
@@ -138,65 +145,93 @@
 	</div>
 {/if}
 
-<div class="mt-4 table-wrap">
-	<table>
-		<thead>
-			<tr>
-				<SortHeader {sort} key="name">Player</SortHeader>
-				<SortHeader {sort} key="faction">Faction</SortHeader>
-				<SortHeader {sort} key="seconds" num title="Time on during the match">Time</SortHeader>
-				<SortHeader {sort} key="kills" num>K</SortHeader>
-				<SortHeader {sort} key="deaths" num>D</SortHeader>
-				<SortHeader {sort} key="kd" num>K/D</SortHeader>
-				<SortHeader {sort} key="kpm" num title="Kills per minute of time on">K/min</SortHeader>
-				<SortHeader {sort} key="cash" num title="The change in the player's cash over the match"
-					>Cash</SortHeader
-				>
-				{#if view.hasFeed}
-					<SortHeader {sort} key="headshots" num title="Headshots">HS</SortHeader>
-					<SortHeader {sort} key="teamKills" num title="Team kills">TK</SortHeader>
-					<SortHeader {sort} key="vehicleKills" num title="Kills with a vehicle">VK</SortHeader>
-					<SortHeader {sort} key="streak" num title="Best kill streak">Streak</SortHeader>
-				{/if}
-			</tr>
-		</thead>
-		<tbody>
-			{#each rows as l (l.steamId)}
-				<tr>
-					<td>
-						<a href={hrefFor(l.steamId)} class="hover:text-accent hover:underline">{l.name}</a>
-						{#if showIds}<span class="block font-mono text-[11px] text-mist-600">{l.steamId}</span
-							>{/if}
-					</td>
-					<td class="whitespace-nowrap">
-						<FactionChip
-							faction={l.faction}
-							scores={view.factions.map((f) => ({ ...f, colorHex: f.colorHex ?? '', score: 0 }))}
-						/>
-						{#if l.result}<span class="ml-1 text-[11px] {RESULT[l.result]}">{l.result}</span>{/if}
-					</td>
-					<td class="num whitespace-nowrap">{fmtLength(l.seconds)}</td>
-					<td class="num">{fmtNum(l.kills)}</td>
-					<td class="num">{fmtNum(l.deaths)}</td>
-					<td class="num">{ratio(kd(l))}</td>
-					<td class="num">{ratio(kpm(l))}</td>
-					<td class="num {l.cashDelta > 0 ? 'text-ok' : l.cashDelta < 0 ? 'text-danger' : ''}"
-						>{l.cashDelta > 0 ? '+' : ''}{fmtCash(l.cashDelta)}</td
-					>
-					{#if view.hasFeed}
-						<td class="num">{l.headshots}</td>
-						<td class="num {l.teamKills >= 3 ? 'text-warn' : ''}">{l.teamKills}</td>
-						<td class="num">{l.vehicleKills}</td>
-						<td class="num">{l.killStreak}</td>
-					{/if}
-				</tr>
+{#each teams as t (t.name ?? '')}
+	<section class="mt-4" aria-label={t.name ?? 'Unassigned'}>
+		<div class="mb-2 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+			{#if t.name}
+				<span class="caps" style="color:{colorOf(t.name)}">{t.name}</span>
+				{#if t.result}<span class="text-[11px] {RESULT[t.result]}">{t.result}</span>{/if}
 			{:else}
-				<tr
-					><td colspan="12" class="py-6 text-center text-mist-600"
-						>Nobody was recorded in this match.</td
-					></tr
+				<span class="caps text-mist-400" title="Players the game never put on a side"
+					>Unassigned</span
 				>
-			{/each}
-		</tbody>
-	</table>
-</div>
+			{/if}
+			<span class="ml-auto text-[12.5px] text-mist-600"
+				>{fmtNum(t.lines.length)} player{t.lines.length === 1 ? '' : 's'}</span
+			>
+		</div>
+		<div class="table-wrap">
+			<table class="md:table-fixed">
+				<colgroup>
+					<col />
+					<col class="w-[110px]" />
+					<col class="w-[70px]" />
+					<col class="w-[70px]" />
+					<col class="w-[80px]" />
+					<col class="w-[90px]" />
+					<col class="w-[120px]" />
+					{#if view.hasFeed}
+						<col class="w-[70px]" />
+						<col class="w-[70px]" />
+						<col class="w-[70px]" />
+						<col class="w-[90px]" />
+					{/if}
+				</colgroup>
+				<thead>
+					<tr>
+						<SortHeader {sort} key="name">Player</SortHeader>
+						<SortHeader {sort} key="seconds" num title="Time on during the match">Time</SortHeader>
+						<SortHeader {sort} key="kills" num>K</SortHeader>
+						<SortHeader {sort} key="deaths" num>D</SortHeader>
+						<SortHeader {sort} key="kd" num>K/D</SortHeader>
+						<SortHeader {sort} key="kpm" num title="Kills per minute of time on">K/min</SortHeader>
+						<SortHeader {sort} key="cash" num title="The change in the player's cash over the match"
+							>Cash</SortHeader
+						>
+						{#if view.hasFeed}
+							<SortHeader {sort} key="headshots" num title="Headshots">HS</SortHeader>
+							<SortHeader {sort} key="teamKills" num title="Team kills">TK</SortHeader>
+							<SortHeader {sort} key="vehicleKills" num title="Kills with a vehicle">VK</SortHeader>
+							<SortHeader {sort} key="streak" num title="Best kill streak">Streak</SortHeader>
+						{/if}
+					</tr>
+				</thead>
+				<tbody>
+					{#each t.lines as l (l.steamId)}
+						<tr>
+							<td>
+								<!-- a long name is cut short, on a phone too, so the numbers stay in view -->
+								<a
+									href={hrefFor(l.steamId)}
+									data-sveltekit-preload-data="tap"
+									title={l.name}
+									class="block max-w-[11rem] truncate hover:text-accent hover:underline md:max-w-none"
+									>{l.name}</a
+								>
+								{#if showIds}<span class="block font-mono text-[11px] text-mist-600"
+										>{l.steamId}</span
+									>{/if}
+							</td>
+							<td class="num whitespace-nowrap">{fmtLength(l.seconds)}</td>
+							<td class="num">{fmtNum(l.kills)}</td>
+							<td class="num">{fmtNum(l.deaths)}</td>
+							<td class="num">{ratio(kd(l))}</td>
+							<td class="num">{ratio(kpm(l))}</td>
+							<td class="num {l.cashDelta > 0 ? 'text-ok' : l.cashDelta < 0 ? 'text-danger' : ''}"
+								>{l.cashDelta > 0 ? '+' : ''}{fmtCash(l.cashDelta)}</td
+							>
+							{#if view.hasFeed}
+								<td class="num">{l.headshots}</td>
+								<td class="num {l.teamKills >= 3 ? 'text-warn' : ''}">{l.teamKills}</td>
+								<td class="num">{l.vehicleKills}</td>
+								<td class="num">{l.killStreak}</td>
+							{/if}
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+		</div>
+	</section>
+{:else}
+	<p class="mt-4 py-6 text-center text-mist-600">Nobody was recorded in this match.</p>
+{/each}

@@ -1,9 +1,16 @@
-// Leaderboards and careers: the vocabulary (ranges, scopes, metrics), how a board request
-// travels in a query string, and the maths that turns stored counts into a result, a streak or a
-// ratio. Pure and client-safe; the queries live in $lib/server/leaderboards.ts and mirror the
-// result rule below in SQL where they aggregate.
+// Leaderboards and careers: the vocabulary (ranges, seasons, scopes, metrics, columns), how a board
+// request travels in a query string, and the maths that turns stored counts into a result, a
+// streak or a ratio. Pure and client-safe; the queries live in $lib/server/leaderboards.ts and
+// mirror the result rule below in SQL where they aggregate.
+import { SEASON_KEY_RE, type Season, type SeasonWinners, type WinnerCategory } from './seasons';
 
-export type BoardRange = '7d' | '30d' | '90d' | 'all';
+/** A rolling range, or all time. */
+export type FixedRange = '7d' | '30d' | '90d' | 'all';
+/**
+ * What a board covers: a fixed range, a season (`s:<key>`), or `current`, whatever the
+ * organisation's boards open on (its current official season unless it chose otherwise).
+ */
+export type BoardRange = FixedRange | 'current' | `s:${string}`;
 export type BoardScope = 'server' | 'org';
 export type BoardMetric =
 	| 'kills'
@@ -15,10 +22,11 @@ export type BoardMetric =
 	| 'matches'
 	| 'wins'
 	| 'winRate'
-	| 'cash';
+	| 'cash'
+	| 'cashPerMin';
 export type SortDir = 'asc' | 'desc';
 
-export const BOARD_RANGES: { key: BoardRange; label: string; ms: number | null }[] = [
+export const BOARD_RANGES: { key: FixedRange; label: string; ms: number | null }[] = [
 	{ key: '7d', label: '7 days', ms: 7 * 86400_000 },
 	{ key: '30d', label: '30 days', ms: 30 * 86400_000 },
 	{ key: '90d', label: '90 days', ms: 90 * 86400_000 },
@@ -34,10 +42,14 @@ export const BOARD_METRICS: { key: BoardMetric; label: string }[] = [
 	{ key: 'matches', label: 'Matches' },
 	{ key: 'wins', label: 'Wins' },
 	{ key: 'winRate', label: 'Win rate' },
-	{ key: 'cash', label: 'Cash' }
+	{ key: 'cash', label: 'Cash' },
+	{ key: 'cashPerMin', label: 'Cash per minute' }
 ];
 const METRIC_KEYS = new Set<string>(BOARD_METRICS.map((m) => m.key));
 const RANGE_KEYS = new Set<string>(BOARD_RANGES.map((r) => r.key));
+const isBoardRange = (v: string): v is BoardRange =>
+	v === 'current' || RANGE_KEYS.has(v) || (v.startsWith('s:') && SEASON_KEY_RE.test(v.slice(2)));
+export const isFixedRange = (v: string): v is FixedRange => RANGE_KEYS.has(v);
 
 /** Ten minutes on an empty server must not top the K/D board: this much playtime, or no rank. */
 export const DEFAULT_FLOOR_MINUTES = 60;
@@ -62,7 +74,7 @@ export interface BoardQuery {
 
 export const DEFAULT_BOARD_QUERY: BoardQuery = {
 	scope: 'server',
-	range: '30d',
+	range: 'current',
 	sort: 'kills',
 	dir: 'desc',
 	page: 1,
@@ -81,6 +93,12 @@ export interface BoardRow {
 	/** the name last seen with, or the id when no session has one */
 	name: string;
 	minutes: number;
+	/**
+	 * the whole time of the sessions the cash came from, what cash per minute divides by: a session
+	 * that began before the range or season counts all of its cash, so all of its minutes too, and
+	 * one still going when a season ended counts in neither; the playtime itself on all time
+	 */
+	cashMinutes: number;
 	/** minutes on with the server low, as the Seeding reward counts them (0 without a rule) */
 	seedMinutes: number;
 	kills: number;
@@ -101,8 +119,22 @@ export interface BoardRow {
 	lastSeen: string | null;
 }
 
+/** What a board turned out to cover: the range it read and, for a season, which. */
+export interface BoardWhen {
+	/** the fixed range, or `s:<key>` */
+	range: FixedRange | `s:${string}`;
+	season: Season | null;
+	/** a finished season: its board no longer changes */
+	finished: boolean;
+}
+
 export interface BoardView {
 	query: BoardQuery;
+	when: BoardWhen;
+	/** the organisation's seasons that have started, for the picker, newest first */
+	seasons: Season[];
+	/** a finished season's top three in each category */
+	winners: SeasonWinners | null;
 	rows: BoardRow[];
 	/** players meeting the floor over the whole board */
 	total: number;
@@ -127,7 +159,7 @@ export function parseBoardQuery(params: URLSearchParams, maxPage = 100_000): Boa
 	const sort = params.get('sort') ?? '';
 	return {
 		scope: params.get('scope') === 'org' ? 'org' : 'server',
-		range: RANGE_KEYS.has(range) ? (range as BoardRange) : DEFAULT_BOARD_QUERY.range,
+		range: isBoardRange(range) ? range : DEFAULT_BOARD_QUERY.range,
 		sort: METRIC_KEYS.has(sort) ? (sort as BoardMetric) : DEFAULT_BOARD_QUERY.sort,
 		dir: params.get('dir') === 'asc' ? 'asc' : 'desc',
 		page: clampInt(params.get('page'), 1, 1, maxPage),
@@ -147,8 +179,62 @@ export function boardQueryParams(q: BoardQuery): Record<string, string> {
 	return out;
 }
 
-/** Where a range starts; null for all time. */
-export const rangeStart = (range: BoardRange, now = Date.now()): Date | null => {
+/**
+ * The board's columns after rank and player, in table order: what each is called on the Seasons
+ * tab and above the column, and the metric its header sorts by. Kills always show, since a board
+ * opens ranked by them; an organisation's owners may leave any other out of its public boards.
+ */
+export const BOARD_COLUMNS = [
+	{ key: 'playtime', label: 'Playtime', head: 'Playtime', sort: 'playtime' },
+	{ key: 'seeded', label: 'Seed time', head: 'Seeded', sort: 'seeded' },
+	{ key: 'kills', label: 'Kills', head: 'K', sort: 'kills' },
+	{ key: 'deaths', label: 'Deaths', head: 'D', sort: 'deaths' },
+	{ key: 'kd', label: 'Kills per death', head: 'K/D', sort: 'kd' },
+	{ key: 'perHour', label: 'Kills per hour', head: 'K/h', sort: 'perHour' },
+	{ key: 'headshots', label: 'Headshots', head: 'HS', sort: null },
+	{ key: 'teamKills', label: 'Team kills', head: 'TK', sort: null },
+	{ key: 'matches', label: 'Matches', head: 'Matches', sort: 'matches' },
+	{ key: 'results', label: 'Wins, losses, draws', head: 'W-L-D', sort: 'wins' },
+	{ key: 'winRate', label: 'Win rate', head: 'Win %', sort: 'winRate' },
+	{ key: 'cash', label: 'Cash', head: 'Cash', sort: 'cash' },
+	{ key: 'cashPerMin', label: 'Cash per minute', head: '$/min', sort: 'cashPerMin' },
+	{ key: 'lastSeen', label: 'Last seen', head: 'Last seen', sort: null }
+] as const satisfies readonly {
+	key: string;
+	label: string;
+	head: string;
+	sort: BoardMetric | null;
+}[];
+export type BoardColumn = (typeof BOARD_COLUMNS)[number]['key'];
+/** The column no board leaves out. */
+export const FIXED_COLUMN: BoardColumn = 'kills';
+
+/**
+ * The columns to leave out of an organisation's public boards, as an owner sends them: column
+ * keys, never kills, in the table's order with repeats dropped. Null for anything else.
+ */
+export function hiddenColumns(v: unknown): BoardColumn[] | null {
+	if (!Array.isArray(v)) return null;
+	const keys = new Set<unknown>(v);
+	for (const k of keys)
+		if (k === FIXED_COLUMN || !BOARD_COLUMNS.some((c) => c.key === k)) return null;
+	return BOARD_COLUMNS.filter((c) => keys.has(c.key)).map((c) => c.key);
+}
+
+/** The stored list read back: whatever is not one of today's columns (or is kills) is left out. */
+export const storedHidden = (v: unknown): BoardColumn[] =>
+	Array.isArray(v)
+		? BOARD_COLUMNS.filter((c) => c.key !== FIXED_COLUMN && v.includes(c.key)).map((c) => c.key)
+		: [];
+
+/** A public board's query: a sort by a column the organisation leaves out ranks by kills instead. */
+export function publicQuery(q: BoardQuery, hidden: readonly BoardColumn[]): BoardQuery {
+	const off = BOARD_COLUMNS.some((c) => c.sort === q.sort && hidden.includes(c.key));
+	return off ? { ...q, sort: DEFAULT_BOARD_QUERY.sort, dir: DEFAULT_BOARD_QUERY.dir } : q;
+}
+
+/** Where a rolling range starts; null for all time. */
+export const rangeStart = (range: FixedRange, now = Date.now()): Date | null => {
 	const ms = BOARD_RANGES.find((r) => r.key === range)?.ms ?? null;
 	return ms === null ? null : new Date(now - ms);
 };
@@ -162,6 +248,13 @@ export const kdRatio = (kills: number, deaths: number): number | null =>
 /** Kills per hour of playtime, seed time left out; nothing without playtime beyond it. */
 export const perHour = (kills: number, minutes: number, seedMinutes = 0): number | null =>
 	minutes - seedMinutes > 0 ? kills / ((minutes - seedMinutes) / 60) : null;
+
+/**
+ * Cash per minute of the time it was made in (a board row's cashMinutes), seed time left out as
+ * for kills per hour; nothing without such time.
+ */
+export const perMinute = (cash: number, minutes: number, seedMinutes = 0): number | null =>
+	minutes - seedMinutes > 0 ? cash / (minutes - seedMinutes) : null;
 
 /** Wins over the matches that had a result; nothing without one. */
 export const winRate = (wins: number, losses: number, draws: number): number | null => {
@@ -252,6 +345,8 @@ export function metricValue(row: BoardRow, metric: BoardMetric): number | null {
 			return winRate(row.wins, row.losses, row.draws);
 		case 'cash':
 			return row.cash;
+		case 'cashPerMin':
+			return perMinute(row.cash, row.cashMinutes, row.seedMinutes);
 	}
 }
 
@@ -316,6 +411,27 @@ export interface CareerView {
 	factions: CareerGroup[];
 	/** the last ten matches, newest first */
 	last: CareerMatch[];
+	/** the organisation's last ten seasons that have started, newest first */
+	seasons: CareerSeason[];
+}
+
+/** A place the player won when a season finished: first, second or third in a category. */
+export interface CareerPlace {
+	category: WinnerCategory;
+	place: number;
+}
+
+/** The player's matches in one season, from the same lines as the rest of the career. */
+export interface CareerSeason {
+	season: Season;
+	matches: number;
+	wins: number;
+	losses: number;
+	draws: number;
+	kills: number;
+	deaths: number;
+	/** their places on this server's board when the season finished; none while it runs */
+	places: CareerPlace[];
 }
 
 /** Match lines grouped by map or faction (most played first): results, kills and deaths. */

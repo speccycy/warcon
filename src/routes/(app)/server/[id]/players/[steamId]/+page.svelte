@@ -20,6 +20,29 @@
 	let { data }: PageProps = $props();
 	let d = $derived<DossierView>(data.dossier);
 	let id = $derived(data.server.id);
+
+	// The names the kill feed showed for the player: the newest few, the rest a press away.
+	const FEED_SHOWN = 5;
+	let feedOpenFor = $state<string | null>(null);
+	let feedShown = $derived(
+		feedOpenFor === d.steamId ? d.feedNames : d.feedNames.slice(0, FEED_SHOWN)
+	);
+	let feedTaken = $derived(d.feedNames.filter((f) => f.holder).length);
+	// a player with more names than the list holds: what it says is of the newest
+	let feedOf = $derived(
+		d.feedNamesTotal > d.feedNames.length
+			? `the ${d.feedNames.length} newest of ${d.feedNamesTotal}`
+			: `the ${d.feedNames.length}`
+	);
+	let feedTakenText = $derived(
+		feedTaken < d.feedNames.length
+			? `${feedTaken} of ${feedOf} ${feedTaken === 1 ? 'was' : 'were'} another player's name on the server`
+			: d.feedNames.length === 1
+				? "another player's name on the server"
+				: d.feedNamesTotal > d.feedNames.length
+					? `each of ${feedOf} another player's name on the server`
+					: "each another player's name on the server"
+	);
 	let canKick = $derived(can(data.server.caps, 'players.kick'));
 	let chat = $derived(can(data.server.caps, 'chat.send'));
 	let bans = $derived(can(data.server.caps, 'bans.manage'));
@@ -193,6 +216,42 @@
 					>· also seen as {d.names.slice(1, 6).join(', ')}{d.names.length > 6 ? '…' : ''}</span
 				>{/if}
 		</div>
+		{#if d.feedNames.length}
+			<div class="mt-1.5 max-w-[980px] text-[12.5px] leading-relaxed text-mist-400">
+				In the kill feed as
+				{#each feedShown as f, i (f.name)}{#if f.holder}<a
+							href="/server/{encodeURIComponent(id)}/players/{encodeURIComponent(f.holder)}"
+							data-sveltekit-preload-data="tap"
+							class="text-accent hover:underline"
+							title="Another player's name on the server when the feed showed it: open their page"
+							>{f.name}</a
+						>{:else}<span class="text-mist-100" title="Nobody on the server had this name"
+							>{f.name}</span
+						>{/if}{i < feedShown.length - 1 ? ', ' : ''}{/each}
+				{#if d.feedNames.length > FEED_SHOWN}
+					{#if feedOpenFor === d.steamId}
+						· <button
+							type="button"
+							class="cursor-pointer text-accent hover:underline"
+							onclick={() => (feedOpenFor = null)}>show fewer</button
+						>
+					{:else}
+						and <button
+							type="button"
+							class="cursor-pointer text-accent hover:underline"
+							onclick={() => (feedOpenFor = d.steamId)}
+							>{d.feedNames.length - FEED_SHOWN} more</button
+						>
+					{/if}
+				{/if}
+				{#if feedTaken}· {feedTakenText}{/if}
+				·
+				<a
+					href="/server/{encodeURIComponent(id)}/kills?player={encodeURIComponent(d.steamId)}"
+					class="text-accent hover:underline">Kills →</a
+				>
+			</div>
+		{/if}
 	</div>
 </div>
 
@@ -243,6 +302,7 @@
 								<td
 									><a
 										href="/server/{encodeURIComponent(s.serverId)}/players/{d.steamId}"
+										data-sveltekit-preload-data="tap"
 										class="hover:text-accent hover:underline">{s.serverName}</a
 									></td
 								>
@@ -376,6 +436,8 @@
 				orgName={data.server.orgName}
 				multiServer={data.multiServer}
 				matchHref={(m) => `/server/${encodeURIComponent(m.serverId)}/matches/${m.matchId}`}
+				seasonHref={(s) =>
+					`/server/${encodeURIComponent(data.server.id)}/leaderboard?range=s:${encodeURIComponent(s.key)}`}
 			/>
 		</div>
 
@@ -709,6 +771,7 @@
 		steamId={d.steamId}
 		name={d.name}
 		canOrg
+		reasons={d.orgLists.banReasons ?? []}
 		onclose={() => (banning = false)}
 		ondone={() => invalidateAll()}
 	/>

@@ -6,6 +6,7 @@ import { eq, sql } from 'drizzle-orm';
 import type { Env } from './env';
 import type { Tx } from './db';
 import { workerOwnership } from './db/schema';
+import { lockTotals } from './totals';
 
 const ROW_ID = 1;
 export const LEASE_MS = 15_000;
@@ -20,6 +21,13 @@ let lastRenewAt = 0;
 export class LostOwnership extends Error {
 	constructor() {
 		super('This process no longer owns the worker lease.');
+	}
+}
+
+/** Work prepared while this process owned the lease before: it changed hands since, and came back. */
+export class StaleOwnership extends Error {
+	constructor() {
+		super('The lease changed hands after this work was prepared; it is dropped.');
 	}
 }
 
@@ -73,16 +81,39 @@ export async function releaseOwnership(env: Env): Promise<void> {
  */
 export const ownedSince = (): number => sinceHere;
 
+/**
+ * Which period of ownership this is: worker_ownership.acquired_at, which changes whenever the lease
+ * changes hands. Work captures it when it reads the game and passes it to withOwnedTransaction.
+ */
+export const ownershipPeriod = (): number => since;
+
 /** Owner, and the last renewal landed within the lease: a stalled renewal is a lost lease. */
 export const isOwner = (): boolean => owner && Date.now() - lastRenewAt < LEASE_MS;
 export const ownershipStats = () => ({ owner, token: token.slice(0, 8), since, lastRenewAt });
 
-/** A transaction that aborts unless this process still holds the lease at commit time. */
-export async function withOwnedTransaction<T>(env: Env, fn: (tx: Tx) => Promise<T>): Promise<T> {
+/**
+ * A transaction that aborts unless this process still holds the lease at commit time. `totalsOf`
+ * takes that server's totals lock first (totals.ts), before the lease row: a transaction waiting
+ * for the lock (a purge of the server holds it) must not hold the row the renewal updates, or one
+ * slow purge would stall the lease and with it every server. Holding nothing on the lease row while
+ * it waits, the lease can change hands and come back meanwhile; `period` (ownershipPeriod() when the
+ * work read the game) refuses the work then, rather than write it over what the other process
+ * wrote, and leaves the lease as it is.
+ */
+export async function withOwnedTransaction<T>(
+	env: Env,
+	fn: (tx: Tx) => Promise<T>,
+	opts: { totalsOf?: string; period?: number } = {}
+): Promise<T> {
 	if (!owner) throw new LostOwnership();
 	return env.db.transaction(async (tx) => {
+		if (opts.totalsOf) await lockTotals(tx, opts.totalsOf);
 		const [row] = await tx
-			.select({ token: workerOwnership.token, leaseUntil: workerOwnership.leaseUntil })
+			.select({
+				token: workerOwnership.token,
+				leaseUntil: workerOwnership.leaseUntil,
+				acquiredAt: workerOwnership.acquiredAt
+			})
 			.from(workerOwnership)
 			.where(eq(workerOwnership.id, ROW_ID))
 			.for('share');
@@ -90,6 +121,8 @@ export async function withOwnedTransaction<T>(env: Env, fn: (tx: Tx) => Promise<
 			owner = false;
 			throw new LostOwnership();
 		}
+		if (opts.period !== undefined && row.acquiredAt.getTime() !== opts.period)
+			throw new StaleOwnership();
 		return fn(tx);
 	});
 }

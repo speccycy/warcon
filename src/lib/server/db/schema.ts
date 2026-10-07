@@ -6,8 +6,10 @@ import {
 	bigserial,
 	boolean,
 	customType,
+	date,
 	index,
 	integer,
+	numeric,
 	pgTable,
 	primaryKey,
 	real,
@@ -198,7 +200,48 @@ export const organizations = pgTable('organizations', {
 	discordInviteUrl: text('discord_invite_url').notNull().default(''),
 	/** what a banned player is shown: the reason and facts about the ban, see $lib/ban-message */
 	banMessage: text('ban_message').notNull().default('{reason}'),
+	/** what the org's boards open on: official | custom | 30d | all ($lib/seasons, BOARD_OPENS) */
+	boardOpens: text('board_opens').notNull().default('official'),
+	/** the columns its public boards leave out ($lib/leaderboard, BOARD_COLUMNS); none = every one */
+	boardHidden: text('board_hidden')
+		.array()
+		.notNull()
+		.default(sql`'{}'::text[]`),
 	createdAt: ts('created_at').notNull().defaultNow(),
+	updatedAt: ts('updated_at').notNull().defaultNow()
+});
+
+/**
+ * A community's own season: a name and a start, running until its next season starts
+ * ($lib/seasons). Nothing is stored per player: its board is a range over the kept history. Once
+ * one has started its start stays put, so a finished season's standings never move.
+ */
+export const seasons = pgTable(
+	'seasons',
+	{
+		id: text('id').primaryKey(),
+		orgId: text('org_id')
+			.notNull()
+			.references(() => organizations.id, { onDelete: 'cascade' }),
+		name: text('name').notNull(),
+		startsAt: ts('starts_at').notNull(),
+		createdBy: text('created_by'),
+		createdAt: ts('created_at').notNull().defaultNow()
+	},
+	(t) => [uniqueIndex('seasons_org_start_uidx').on(t.orgId, t.startsAt)]
+);
+
+/**
+ * The org's quick reasons: the buttons under Reason in the ban dialog ($lib/ban-reasons). No row
+ * means the built-in six. Kept off `organizations`, whose whole row the worker reads with every
+ * server every few seconds.
+ */
+export const orgBanReasons = pgTable('org_ban_reasons', {
+	orgId: text('org_id')
+		.primaryKey()
+		.references(() => organizations.id, { onDelete: 'cascade' }),
+	/** BanReason[], in the order the buttons show */
+	reasons: jsonb('reasons').notNull(),
 	updatedAt: ts('updated_at').notNull().defaultNow()
 });
 
@@ -486,7 +529,9 @@ export const matches = pgTable(
 		/** the match in progress, which every status look and kill batch reads: one entry per server */
 		index('matches_open_idx')
 			.on(t.serverId, t.id)
-			.where(sql`${t.endedAt} is null`)
+			.where(sql`${t.endedAt} is null`),
+		/** the matches that ended in a range's first, partial day (rangeBase) */
+		index('matches_server_ended_idx').on(t.serverId, t.endedAt)
 	]
 );
 
@@ -540,6 +585,32 @@ export const kills = pgTable(
 export type KillRow = typeof kills.$inferSelect;
 
 /**
+ * The names the kill feed showed for a player that were not the one the server's player list held
+ * for them then (a clan tag put on, taken off or swapped is the same name): one row per server,
+ * player and name, with when it was first and last shown and, when it read as another listed
+ * player's name, that player. Staff see them on the dossier as "in the kill feed as", and the
+ * Players searches match them. Written by the worker as kill batches come in (feed-events.ts) and,
+ * once, from the history (aliases.ts); kept for good. A name that differs is rare, so rows are few.
+ */
+export const playerAliases = pgTable(
+	'player_aliases',
+	{
+		serverId: text('server_id').notNull(),
+		steamId: text('steam_id').notNull(),
+		/** as the feed showed it */
+		name: text('name').notNull(),
+		/** the listed player whose name it read as, the last time it was someone else's */
+		holder: text('holder'),
+		firstSeen: ts('first_seen').notNull(),
+		lastSeen: ts('last_seen').notNull()
+	},
+	(t) => [
+		primaryKey({ columns: [t.serverId, t.steamId, t.name] }),
+		index('player_aliases_steam_idx').on(t.steamId)
+	]
+);
+
+/**
  * One row per player per match: the game's own scoreboard counters over the match (kills, deaths,
  * the change in cash) with the player's time on and side, and, on servers with a kill feed, what
  * the feed adds (headshots, team kills, suicides, vehicle kills, longest shot, best streaks).
@@ -579,6 +650,88 @@ export const matchPlayers = pgTable(
 	]
 );
 export type MatchPlayerRow = typeof matchPlayers.$inferSelect;
+
+/**
+ * Each player's settled totals on a server, for the all-time reads (boards and their export,
+ * career ranks, the placeholders' stats, the risk record), which add the open sessions: the sums
+ * of the player's closed sessions and of their lines of ended matches, with the boards' result
+ * rule. A row exists while the pair has either. Kept by triggers on player_sessions, matches and
+ * match_players in the writer's own transaction, whoever the writer is (migration 0038 holds the
+ * rules); the application only reads it, and takes player_totals_lock(server) before it closes a
+ * session, ends a match or purges (totals.ts).
+ */
+export const playerTotals = pgTable(
+	'player_totals',
+	{
+		serverId: text('server_id').notNull(),
+		steamId: text('steam_id').notNull(),
+		/** closed sessions */
+		sessions: integer('sessions').notNull().default(0),
+		/** SUM(EXTRACT(EPOCH FROM left_at - joined_at)) over them, exact */
+		seconds: numeric('seconds').notNull().default('0'),
+		seedSeconds: bigint('seed_seconds', { mode: 'number' }).notNull().default(0),
+		cash: bigint('cash', { mode: 'number' }).notNull().default(0),
+		/** MAX(last_seen) over them; null without one */
+		lastSeen: ts('last_seen'),
+		/** lines of ended matches */
+		matches: integer('matches').notNull().default(0),
+		kills: bigint('kills', { mode: 'number' }).notNull().default(0),
+		deaths: bigint('deaths', { mode: 'number' }).notNull().default(0),
+		headshots: bigint('headshots', { mode: 'number' }).notNull().default(0),
+		teamKills: bigint('team_kills', { mode: 'number' }).notNull().default(0),
+		suicides: bigint('suicides', { mode: 'number' }).notNull().default(0),
+		vehicleKills: bigint('vehicle_kills', { mode: 'number' }).notNull().default(0),
+		killStreak: integer('kill_streak').notNull().default(0),
+		deathStreak: integer('death_streak').notNull().default(0),
+		wins: integer('wins').notNull().default(0),
+		losses: integer('losses').notNull().default(0),
+		draws: integer('draws').notNull().default(0)
+	},
+	(t) => [primaryKey({ columns: [t.serverId, t.steamId] })]
+);
+
+/**
+ * Each player's settled totals on a server per UTC day, for the ranged boards (7, 30 and 90 days),
+ * which add the range's partial first day and the open sessions (rangeBase): the closed sessions'
+ * time within the day, the joined_at of each closed session that crossed the day's midnight (what
+ * a range starting the day before needs), and the count, seed time, cash and last sighting of the
+ * sessions that left on the day; the lines of the matches that ended on it, with the boards' result
+ * rule. A row exists while it holds any of them. Kept by the same triggers and lock as
+ * player_totals (migration 0039 extends 0038's); the application only reads it.
+ */
+export const playerDays = pgTable(
+	'player_days',
+	{
+		serverId: text('server_id').notNull(),
+		/** the UTC date */
+		day: date('day', { mode: 'string' }).notNull(),
+		steamId: text('steam_id').notNull(),
+		/** the closed sessions' seconds within the day, exact */
+		seconds: numeric('seconds').notNull().default('0'),
+		/** joined_at of each closed session that started before the day and left on it or later, in order; null when none */
+		crossings: ts('crossings').array(),
+		/** closed sessions that left on the day */
+		sessions: integer('sessions').notNull().default(0),
+		seedSeconds: bigint('seed_seconds', { mode: 'number' }).notNull().default(0),
+		cash: bigint('cash', { mode: 'number' }).notNull().default(0),
+		/** MAX(last_seen) over them; null without one */
+		lastSeen: ts('last_seen'),
+		/** lines of matches that ended on the day */
+		matches: integer('matches').notNull().default(0),
+		kills: bigint('kills', { mode: 'number' }).notNull().default(0),
+		deaths: bigint('deaths', { mode: 'number' }).notNull().default(0),
+		headshots: bigint('headshots', { mode: 'number' }).notNull().default(0),
+		teamKills: bigint('team_kills', { mode: 'number' }).notNull().default(0),
+		suicides: bigint('suicides', { mode: 'number' }).notNull().default(0),
+		vehicleKills: bigint('vehicle_kills', { mode: 'number' }).notNull().default(0),
+		killStreak: integer('kill_streak').notNull().default(0),
+		deathStreak: integer('death_streak').notNull().default(0),
+		wins: integer('wins').notNull().default(0),
+		losses: integer('losses').notNull().default(0),
+		draws: integer('draws').notNull().default(0)
+	},
+	(t) => [primaryKey({ columns: [t.serverId, t.day, t.steamId] })]
+);
 
 // ---- Player intelligence: org-scoped notes and watchlist, cached Steam data, ban snapshots ------
 
@@ -685,7 +838,8 @@ export const triggers = pgTable(
 				'kill_rate',
 				'two_teams',
 				'kill_distance',
-				'afk_protection'
+				'afk_protection',
+				'name_change'
 			]
 		}).notNull(),
 		name: text('name').notNull(),

@@ -36,6 +36,7 @@ import {
 	type ListRow
 } from './db/schema';
 import { DEFAULT_BAN_MESSAGE } from '$lib/ban-message';
+import { banReasonsFor } from './ban-reasons';
 import { requireSteamId } from './steam';
 import { desiredFor, memberSlots, summaryOf } from './lists-sync';
 import { latestNames } from './sessions';
@@ -287,12 +288,13 @@ function shapeEntry(
 
 /**
  * The org's lists as one person may see them: the lists they edit with their counts, where the
- * sync stands on each server (it pushes every list), and the ban message for the ban list's
- * editors.
+ * sync stands on each server (it pushes every list), and the ban message and quick reasons for
+ * the ban list's editors.
  */
 export async function orgListsView(env: Env, org: OrgRow, role: ListsRole): Promise<OrgListsView> {
 	const rows = (await orgLists(env, org.id)).filter((l) => role.kinds.includes(l.kind));
-	const [counts, srv] = await Promise.all([
+	const bans = role.kinds.includes('ban');
+	const [counts, srv, banReasons] = await Promise.all([
 		env.db
 			.select({ listId: listEntries.listId, n: count() })
 			.from(listEntries)
@@ -306,7 +308,8 @@ export async function orgListsView(env: Env, org: OrgRow, role: ListsRole): Prom
 				)
 			)
 			.groupBy(listEntries.listId),
-		orgServerRefs(env, org.id)
+		orgServerRefs(env, org.id),
+		bans ? banReasonsFor(env, org.id) : null
 	]);
 	const syncRows = srv.length
 		? await env.db
@@ -325,7 +328,8 @@ export async function orgListsView(env: Env, org: OrgRow, role: ListsRole): Prom
 		role: role.owner ? 'owner' : 'editor',
 		kinds: role.kinds,
 		membersReserved: org.membersReserved,
-		banMessage: role.kinds.includes('ban') ? org.banMessage : null,
+		banMessage: bans ? org.banMessage : null,
+		banReasons,
 		servers: srv.map((s) => {
 			const y = syncOf.get(s.id);
 			return {
@@ -958,8 +962,8 @@ export async function serverListsState(
 	]);
 	const orgBans = !!role?.kinds.includes('ban');
 	const orgSlots = !!role?.kinds.includes('reserve');
-	// who placed a ban, and the message the org wraps its bans in, are for those who manage bans
-	// here or edit the org's ban list
+	// who placed a ban, the message the org wraps its bans in and its quick reasons are for those
+	// who manage bans here or edit the org's ban list
 	const staff = orgBans || access.caps.has('bans.manage');
 	const out: ServerListsState = {
 		canEditOrgBans: orgBans,
@@ -967,6 +971,7 @@ export async function serverListsState(
 		orgOwner: !!role?.owner,
 		orgId: server.orgId,
 		banMessage: null,
+		banReasons: null,
 		bans: {},
 		reserved: {},
 		sync: sync
@@ -1002,7 +1007,10 @@ export async function serverListsState(
 		membersReserved: false,
 		banMessage: DEFAULT_BAN_MESSAGE
 	};
-	if (staff) out.banMessage = org.banMessage;
+	if (staff) {
+		out.banMessage = org.banMessage;
+		out.banReasons = await banReasonsFor(env, server.orgId);
+	}
 	const desired = await desiredFor(env, server, org);
 	// a ban on the lists is in force: the panel removes the player itself. One the game also
 	// holds in its own list shows as the panel's.

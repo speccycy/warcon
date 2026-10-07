@@ -6,7 +6,8 @@
 	import { api, errorMessage } from '$lib/api';
 	import { toast } from '$lib/toast.svelte';
 	import { DEFAULT_BAN_MESSAGE, renderBanMessage } from '$lib/ban-message';
-	import { describeSync, EXPIRY_OPTIONS, expiryIso, REASON_PRESETS } from '$lib/lists';
+	import { lengthTag, type BanReason } from '$lib/ban-reasons';
+	import { describeSync, EXPIRY_OPTIONS, expiryIso } from '$lib/lists';
 	import { isSteamId, steamProfiles, type SteamProfile } from '$lib/steam-profiles';
 	import type { ListSyncServer, ListSyncSummary } from '$lib/types';
 	import Modal from './Modal.svelte';
@@ -20,6 +21,7 @@
 		server = null,
 		canOrg,
 		banMessage = null,
+		reasons,
 		onclose,
 		ondone
 	}: {
@@ -34,6 +36,8 @@
 		canOrg: boolean;
 		/** the org's ban message, where the page has it: the dialog then shows the text it makes */
 		banMessage?: string | null;
+		/** the org's quick reasons, the buttons under Reason */
+		reasons: BanReason[];
 		onclose: () => void;
 		ondone: (scope: 'org' | 'server') => unknown;
 	} = $props();
@@ -59,6 +63,12 @@
 			expiresAt: until ? new Date(until) : null
 		});
 	});
+
+	/** A quick reason fills in its reason and, when it has a length, sets Expires. */
+	function pick(r: BanReason) {
+		reason = r.reason;
+		if (r.days !== null) expiry = String(r.days);
+	}
 
 	let who = $derived(name ? `${name} (${steamId})` : steamId || 'a player');
 	// A typed id is looked up so the admin sees who they are about to ban.
@@ -180,15 +190,21 @@
 				bind:value={reason}
 			/></label
 		>
-		<div class="flex flex-wrap gap-1.5">
-			{#each REASON_PRESETS as preset (preset)}
-				<button
-					type="button"
-					class="chip cursor-pointer hover:bg-white/12 {reason === preset ? 'text-accent' : ''}"
-					onclick={() => (reason = preset)}>{preset}</button
-				>
-			{/each}
-		</div>
+		{#if reasons.length}
+			<div class="flex flex-wrap gap-1.5">
+				{#each reasons as r (r.label)}
+					<button
+						type="button"
+						class="chip cursor-pointer hover:bg-white/12 {reason === r.reason ? 'text-accent' : ''}"
+						title={r.reason}
+						onclick={() => pick(r)}
+						>{r.label}{#if r.days !== null}<span class="text-mist-400"
+								>&nbsp;{lengthTag(r.days)}</span
+							>{/if}</button
+					>
+				{/each}
+			</div>
+		{/if}
 
 		<div class="flex flex-wrap gap-3">
 			<label class="block sm:w-48"

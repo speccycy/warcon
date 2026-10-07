@@ -267,6 +267,7 @@
 			canBan={bans}
 			canWatch={notes}
 			canOrg={listState?.canEditOrgBans ?? false}
+			reasons={listState?.banReasons ?? []}
 		/>
 	{:else}
 		<div class="mb-3 flex flex-wrap items-center gap-2">
@@ -328,6 +329,7 @@
 							<td
 								><a
 									href="{base}/{p.steamId}"
+									data-sveltekit-preload-data="tap"
 									class="font-medium text-mist-100 underline decoration-mist-600 underline-offset-[3px] hover:text-accent hover:decoration-accent"
 									>{p.name}</a
 								>
@@ -559,6 +561,7 @@
 			server={{ id, name: data.server.name }}
 			canOrg={listState?.canEditOrgBans ?? false}
 			banMessage={listState?.banMessage}
+			reasons={listState?.banReasons ?? []}
 			onclose={() => (banning = null)}
 			ondone={refreshPlayers}
 		/>

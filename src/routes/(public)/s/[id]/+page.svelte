@@ -239,6 +239,7 @@
 										<td class="max-w-[260px] truncate">
 											{#if p.steamId}<a
 													href="{base}/players/{p.steamId}"
+													data-sveltekit-preload-data="tap"
 													class="hover:text-accent hover:underline">{p.name}</a
 												>{:else}{p.name}{/if}
 										</td>

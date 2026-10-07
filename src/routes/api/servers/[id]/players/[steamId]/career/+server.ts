@@ -20,6 +20,7 @@ export const GET = route(async (event) => {
 	);
 	const career = await loadCareer(env, {
 		serverId: server.id,
+		orgId: server.orgId,
 		ids: visible.map((s) => s.id),
 		nameOf: new Map(visible.map((s) => [s.id, s.name])),
 		steamId

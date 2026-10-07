@@ -161,14 +161,19 @@ describe.skipIf(!hasTestDb)('stats in messages', () => {
 			draws: 0
 		});
 		expect(stats.has(NEW.id)).toBe(false);
-		const board = await loadBoard(env, [w.server.id], {
-			scope: 'server',
-			range: 'all',
-			sort: 'kills',
-			dir: 'desc',
-			page: 1,
-			minMinutes: 0
-		});
+		const board = await loadBoard(
+			env,
+			[w.server.id],
+			{
+				scope: 'server',
+				range: 'all',
+				sort: 'kills',
+				dir: 'desc',
+				page: 1,
+				minMinutes: 0
+			},
+			w.org.id
+		);
 		const row = board.rows.find((r) => r.steamId === OWL.id)!;
 		const owl = stats.get(OWL.id)!;
 		expect([row.kills, row.deaths, row.minutes, row.seedMinutes, row.matches, row.wins]).toEqual([
@@ -193,14 +198,19 @@ describe.skipIf(!hasTestDb)('stats in messages', () => {
 			losses: 1,
 			draws: 0
 		});
-		const board = await loadBoard(env, [w.server.id, w.otherServer.id], {
-			scope: 'org',
-			range: 'all',
-			sort: 'kills',
-			dir: 'desc',
-			page: 1,
-			minMinutes: 0
-		});
+		const board = await loadBoard(
+			env,
+			[w.server.id, w.otherServer.id],
+			{
+				scope: 'org',
+				range: 'all',
+				sort: 'kills',
+				dir: 'desc',
+				page: 1,
+				minMinutes: 0
+			},
+			w.org.id
+		);
 		const row = board.rows.find((r) => r.steamId === OWL.id)!;
 		expect([row.kills, row.deaths, row.minutes, row.matches, row.wins]).toEqual([
 			org.kills,

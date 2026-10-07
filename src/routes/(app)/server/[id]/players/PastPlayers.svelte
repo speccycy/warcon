@@ -10,12 +10,15 @@
 	import SortHeader from '$lib/components/SortHeader.svelte';
 	import type { SortLike } from '$lib/table.svelte';
 	import type { SeenPlayer, SeenSort } from '$lib/server/seen';
+	import type { BanReason } from '$lib/ban-reasons';
+	import { feedNamesLine } from '$lib/feed-names';
 
 	let {
 		server,
 		canBan,
 		canWatch,
-		canOrg
+		canOrg,
+		reasons
 	}: {
 		server: { id: string; name: string; orgId: string; orgName: string };
 		/** holds Bans here: the row's Ban places it on this server's list or the org's */
@@ -24,6 +27,8 @@
 		canWatch: boolean;
 		/** may edit the org's ban list: the Ban dialog then offers every server */
 		canOrg: boolean;
+		/** the org's quick reasons for the Ban dialog */
+		reasons: BanReason[];
 	} = $props();
 
 	const PAGE = 50;
@@ -168,6 +173,7 @@
 						<div class="flex flex-wrap items-baseline gap-x-2">
 							<a
 								href="/server/{encodeURIComponent(server.id)}/players/{p.steamId}"
+								data-sveltekit-preload-data="tap"
 								class="font-medium hover:text-accent hover:underline"
 								title="Open profile">{p.name}</a
 							>
@@ -178,6 +184,16 @@
 								>
 							{/if}
 						</div>
+						{#if p.feedNames.length}
+							{@const line = feedNamesLine(p.feedNames, q)}
+							<div class="text-[12px] text-mist-400" title={p.feedNames.join(', ')}>
+								in the kill feed as {#each line.names as f, i (f.name)}<span
+										class={f.hit ? 'font-semibold text-accent' : ''}>{f.name}</span
+									>{i < line.names.length - 1
+										? ', '
+										: ''}{/each}{#if line.more}{` and ${line.more} more`}{/if}
+							</div>
+						{/if}
 						<div class="font-mono text-[12.5px] text-mist-400">{p.steamId}</div>
 					</td>
 					<td class="whitespace-nowrap" title={fmtTime(p.lastSeen)}>{fmtAgo(p.lastSeen)}</td>
@@ -246,6 +262,7 @@
 			name={banning.name}
 			server={{ id: server.id, name: server.name }}
 			{canOrg}
+			{reasons}
 			onclose={() => (banning = null)}
 			ondone={() => load()}
 		/>

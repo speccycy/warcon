@@ -52,13 +52,17 @@
 				{@const r = resultLine(m)}
 				<tr>
 					<td class="whitespace-nowrap">
-						{#if m.endedAt}<a href={hrefFor(m)} class="hover:text-accent hover:underline"
-								>{fmtTime(m.startedAt)}</a
+						{#if m.endedAt}<a
+								href={hrefFor(m)}
+								data-sveltekit-preload-data="tap"
+								class="hover:text-accent hover:underline">{fmtTime(m.startedAt)}</a
 							>{:else}{fmtTime(m.startedAt)}{/if}
 					</td>
 					<td>
-						{#if m.endedAt}<a href={hrefFor(m)} class="hover:text-accent hover:underline"
-								>{mapName(m.map)}</a
+						{#if m.endedAt}<a
+								href={hrefFor(m)}
+								data-sveltekit-preload-data="tap"
+								class="hover:text-accent hover:underline">{mapName(m.map)}</a
 							>{:else}{mapName(m.map)}{/if}
 					</td>
 					<td class="num whitespace-nowrap">{fmtLength(durationOf(m, now))}</td>

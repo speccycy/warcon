@@ -249,7 +249,8 @@ describe('the catalogue and the rules’ settings', () => {
 		two_teams: { closedFaction: 'Lonestar', message: 'a' },
 		kill_distance: { causes: ['Id.Item.Defibrillator.Standard'], action: 'kick', reason: 'a' },
 		seed_reward: { minutes: 30, message: 'a' },
-		afk_protection: { message: 'a', doneMessage: 'b' }
+		afk_protection: { message: 'a', doneMessage: 'b' },
+		name_change: { action: 'kick', reason: 'a' }
 	};
 	test('every message field the catalogue names is a text the rule keeps', () => {
 		for (const [kind, rule] of Object.entries(MESSAGE_RULES)) {

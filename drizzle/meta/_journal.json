@@ -267,6 +267,48 @@
       "when": 1791069654398,
       "tag": "0037_read_and_write_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1791109561028,
+      "tag": "0038_player_totals",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1791142161935,
+      "tag": "0039_player_days",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1791305520229,
+      "tag": "0040_seasons",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1791324194967,
+      "tag": "0041_org_ban_reasons",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1791329296794,
+      "tag": "0042_player_aliases",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1791332646106,
+      "tag": "0043_org_board_hidden",
+      "breakpoints": true
     }
   ]
 }

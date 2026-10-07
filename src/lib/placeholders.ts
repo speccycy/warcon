@@ -90,7 +90,9 @@ export const MESSAGE_RULES: Readonly<Partial<Record<TriggerKind, MessageRule>>> 
 		kept: true
 	},
 	seed_reward: { fields: ['message'], own: ['minutes', 'until', 'days'], player: true },
-	afk_protection: { fields: ['message', 'doneMessage'], own: ['goal'], player: false }
+	afk_protection: { fields: ['message', 'doneMessage'], own: ['goal'], player: false },
+	// the name the player had before the change
+	name_change: { fields: ['reason'], own: ['previous'], player: true }
 };
 
 export type PlaceholderGroupKey = 'own' | 'player' | 'stats' | 'org' | 'server';

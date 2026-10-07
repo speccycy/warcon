@@ -1,0 +1,1 @@
+ALTER TABLE "organizations" ADD COLUMN "board_hidden" text[] DEFAULT '{}'::text[] NOT NULL;
