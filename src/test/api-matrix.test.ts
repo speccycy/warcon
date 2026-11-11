@@ -109,6 +109,13 @@ const MATRIX: Record<string, Policy | typeof PER_LIST> = {
 	'GET api/orgs/[id]/lists': 'lists',
 	'GET api/orgs/[id]/lists/[kind]/entries': PER_LIST,
 	'POST api/orgs/[id]/lists/[kind]/entries': PER_LIST,
+	// Guarded reserve endpoints exist only for reserve and use the same role check.
+	'GET api/orgs/[id]/lists/[kind]/entries/guarded': 'lists:reserve',
+	'POST api/orgs/[id]/lists/[kind]/entries/guarded': 'lists:reserve',
+	'GET api/orgs/[id]/lists/[kind]/entries/[steamId]/guarded': 'lists:reserve',
+	'PATCH api/orgs/[id]/lists/[kind]/entries/[steamId]/guarded': 'lists:reserve',
+	'DELETE api/orgs/[id]/lists/[kind]/entries/[steamId]/guarded': 'lists:reserve',
+	'PATCH api/orgs/[id]/lists/[kind]/entries/[steamId]/guarded-cas': 'lists:reserve',
 	'PATCH api/orgs/[id]/lists/[kind]/entries/[steamId]': PER_LIST,
 	'DELETE api/orgs/[id]/lists/[kind]/entries/[steamId]': PER_LIST,
 	'GET api/orgs/[id]/lists/import': 'listsOwner',
@@ -245,7 +252,7 @@ describe.skipIf(!hasTestDb)('API permission matrix', () => {
 	const runs = Object.entries(MATRIX).flatMap(([key, line]) =>
 		line === PER_LIST
 			? LIST_KINDS.map((kind) => ({ key, kind, policy: `lists:${kind}` as Policy }))
-			: [{ key, kind: 'ban' as ListKind, policy: line }]
+			: [{ key, kind: (line === 'lists:reserve' ? 'reserve' : 'ban') as ListKind, policy: line }]
 	);
 	for (const { key, kind, policy } of runs) {
 		const [method, path] = key.split(' ');

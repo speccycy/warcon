@@ -25,8 +25,11 @@ describe.skipIf(!hasTestDb)('one server row per RCON address', () => {
 			await env.db.update(organizations).set({ serverLimit: 1000 }).where(eq(organizations.id, id));
 	});
 
-	/** A public address no other test uses. */
-	const address = () => `198.20.${randomInt(1, 255)}.${randomInt(1, 255)}`;
+	// Unique within this suite: two random addresses could collide and make a later
+	// duplicate-target test accidentally report the previous server's name.
+	const subnet = randomInt(1, 255);
+	let nextHost = 0;
+	const address = () => `198.20.${subnet}.${++nextHost}`;
 
 	const add = (who: 'owner' | 'outsider', orgId: string, body: Record<string, unknown>) =>
 		callApi(createRoute, w.users[who], {
@@ -77,7 +80,7 @@ describe.skipIf(!hasTestDb)('one server row per RCON address', () => {
 
 	test('the same org adding it again is told which of its servers has it', async () => {
 		const host = address();
-		await add('owner', w.org.id, { name: 'Alpha', host, port: 7779 });
+		expect((await add('owner', w.org.id, { name: 'Alpha', host, port: 7779 })).status).toBe(201);
 		const r = await add('owner', w.org.id, { name: 'Beta', host, port: 7779 });
 		expect([r.status, r.code]).toEqual([409, 'duplicate_target']);
 		expect(r.message).toBe('Alpha already uses this address.');
