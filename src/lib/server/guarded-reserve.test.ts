@@ -8,8 +8,13 @@ if (!testDatabaseUrl) {
 	});
 } else {
 	// Never run a destructive fixture against persistent development or production.
-	if (testDatabaseUrl !== 'postgres://infh-dev@127.0.0.1:55495/warcon_issue95_test') {
-		throw new Error('Guarded SQL test requires the exact local issue95 disposable fixture URL.');
+	const localFixture =
+		testDatabaseUrl === 'postgres://infh-dev@127.0.0.1:55495/warcon_issue95_test';
+	const ciFixture =
+		process.env.CI === 'true' &&
+		testDatabaseUrl === 'postgres://warcon:warcon@127.0.0.1:5432/warcon_issue95_test';
+	if (!localFixture && !ciFixture) {
+		throw new Error('Guarded SQL test requires the exact local or CI disposable fixture URL.');
 	}
 	mock.module('./audit', () => ({ writeAudit: async () => {} }));
 	mock.module('./gateway', () => ({

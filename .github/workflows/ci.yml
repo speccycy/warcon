@@ -31,14 +31,42 @@ jobs:
       # bun test makes its own warcon_test_* database on this server for the permission suites
       TEST_DATABASE_URL: postgres://warcon:warcon@127.0.0.1:5432/postgres
     steps:
-      - uses: actions/checkout@v7
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: latest
+          bun-version: 1.4.4
       - run: bun install --frozen-lockfile
       - run: bun run lint
       - run: bun run check
       - run: bun test
+      - name: Guarded SQL contract on disposable PostgreSQL 18
+        env:
+          CI: 'true'
+          WARCON_ISSUE95_TEST_DATABASE_URL: postgres://warcon:warcon@127.0.0.1:5432/warcon_issue95_test
+        run: |
+          bun -e '
+            import { SQL } from "bun";
+            import { connect, runMigrations, schema } from "./src/lib/server/db/index.ts";
+            const admin = new SQL(process.env.TEST_DATABASE_URL, { max: 1 });
+            try {
+              await admin.unsafe("CREATE DATABASE warcon_issue95_test");
+            } finally {
+              await admin.close();
+            }
+            const { client, db } = connect(process.env.WARCON_ISSUE95_TEST_DATABASE_URL);
+            try {
+              await runMigrations(db, "./drizzle");
+              await db.insert(schema.organizations).values({
+                id: "org-test", name: "CI guarded contract", slug: "issue95-ci"
+              });
+              await db.insert(schema.lists).values({
+                id: "list-reserve", orgId: "org-test", kind: "reserve", isDefault: true
+              });
+            } finally {
+              await client.close();
+            }
+          '
+          bun test src/lib/server/guarded-reserve.test.ts
       - run: bun run build
       - name: Smoke test the production build
         env:
@@ -65,9 +93,9 @@ jobs:
   docker:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/build-push-action@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           push: false
