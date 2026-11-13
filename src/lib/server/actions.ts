@@ -12,9 +12,23 @@ import { saneScores } from '../format';
 import { MAX_CHAT } from '../chat';
 import { hideSecretValues, redactSecrets, restoreSecrets, SECRET_PLACEHOLDER } from '../config-doc';
 import { feedReportOf } from '../feed-report';
+import { CHAT_MAX_LIMIT, CHAT_PAGE, chatReadOf, chatTermsOf, type ChatRead } from '../chat-read';
+import { hiddenNameOf } from '../anonymous';
 
 export interface ActionDef {
 	cap: Capability;
+	/**
+	 * Only an owner of the server's organisation (or the site owner) may run it, in person: never
+	 * an API key, whatever capabilities it carries. For what is the organisation's own agreement
+	 * rather than a permission it hands out (accepting the game's chat terms). Checked where
+	 * `cap` is, in rcon-run.ts.
+	 */
+	manager?: true;
+	/**
+	 * Read on a timer by an open page (the Chat tab). It takes its turn in the server's lane with
+	 * the worker's own looks, behind people's commands and rules' deliveries.
+	 */
+	poll?: true;
 	mutating: boolean;
 	// What the audit row's target column should hold.
 	target?: (p: any) => string;
@@ -412,6 +426,9 @@ async function whisperMany(c: WardogsClient, p: any) {
 	};
 }
 
+/** The chat terms version a request names; 0 when it names none. */
+const termsVersion = (p: any): number => int(p?.version, 0, 0, 1_000_000);
+
 export const ACTIONS: Record<string, ActionDef> = {
 	// ---- reads (viewer) ----
 	capabilities: {
@@ -436,7 +453,11 @@ export const ACTIONS: Record<string, ActionDef> = {
 						routes.includes('POST /v1/rotation/entries/*/move'),
 					rotationSave: routes.includes('POST /v1/rotation/save'),
 					liveSettings: routes.includes('PATCH /v1/settings'),
-					serverId: routes.includes('GET /v1/server-id')
+					serverId: routes.includes('GET /v1/server-id'),
+					chat:
+						routes.includes('GET /v1/chat') &&
+						routes.includes('GET /v1/chat/terms') &&
+						routes.includes('POST /v1/chat/terms')
 				},
 				raw: data
 			};
@@ -462,15 +483,20 @@ export const ACTIONS: Record<string, ActionDef> = {
 			if (!Array.isArray(d?.players))
 				throw new GameError(502, 'The server did not return a player list.', 'bad_response', d);
 			return {
-				players: d.players.map((p: any) => ({
-					name: p.name,
-					steamId: p.steamId,
-					faction: p.faction ?? null,
-					kills: p.kills ?? 0,
-					deaths: p.deaths ?? 0,
-					cash: p.cash ?? 0,
-					ping: p.pingMs ?? p.ping ?? null
-				}))
+				players: d.players.map((p: any) => {
+					// Season 3: the name the others see, kept only for a player in anonymous mode
+					const hiddenName = hiddenNameOf(p);
+					return {
+						name: p.name,
+						steamId: p.steamId,
+						faction: p.faction ?? null,
+						kills: p.kills ?? 0,
+						deaths: p.deaths ?? 0,
+						cash: p.cash ?? 0,
+						ping: p.pingMs ?? p.ping ?? null,
+						...(hiddenName ? { hiddenName } : {})
+					};
+				})
 			};
 		}
 	},
@@ -615,6 +641,54 @@ export const ACTIONS: Record<string, ActionDef> = {
 				throw new GameError(502, 'The server did not return a feed report.', 'bad_response');
 			return report;
 		}
+	},
+
+	// ---- Season 3: in-game chat ($lib/chat-read) ----
+	// The terms the game sets on its chat and on its event feed, for those who may read the chat:
+	// they are the conditions it is read under. A build without the route answers no_route.
+	chatTerms: {
+		cap: 'chat.read',
+		poll: true,
+		mutating: false,
+		run: async (c) => {
+			const terms = chatTermsOf(await c.json('GET', '/v1/chat/terms'));
+			if (!terms)
+				throw new GameError(502, 'The server did not return its chat terms.', 'bad_response');
+			return terms;
+		}
+	},
+	// Accepting them is the agreement of whoever runs the server: an owner of its organisation, in
+	// person, for the version they were shown. The trail keeps who accepted which version.
+	chatTermsAccept: {
+		cap: 'chat.read',
+		manager: true,
+		mutating: true,
+		target: (p) => (termsVersion(p) ? `version ${termsVersion(p)}` : ''),
+		audit: (p) => ({ version: termsVersion(p) }),
+		run: async (c, p) => {
+			const version = termsVersion(p);
+			if (!version)
+				throw new ApiError(400, 'Say which version of the terms is accepted.', 'missing_version');
+			const answer = await c.json('POST', '/v1/chat/terms', { version });
+			// `pending` is the game's own word that the acceptance has yet to take effect
+			return {
+				message: `Chat terms version ${version} accepted.`,
+				pending: answer?.pending === true
+			};
+		}
+	},
+	// The chat lines after `after`, oldest first. Players' messages: handed to the caller and kept
+	// nowhere. A read writes no audit detail, and nothing here stores or forwards a line.
+	chat: {
+		cap: 'chat.read',
+		poll: true,
+		mutating: false,
+		run: (c, p) =>
+			readChat(
+				c,
+				int(p.after, 0, 0, Number.MAX_SAFE_INTEGER),
+				int(p.limit, CHAT_PAGE, 1, CHAT_MAX_LIMIT)
+			)
 	},
 
 	// ---- operator ----
@@ -968,6 +1042,14 @@ export const ACTIONS: Record<string, ActionDef> = {
 					"The config document is not served through raw: use the 'config', 'configValidate' and 'configApply' actions.",
 					'use_config_actions'
 				);
+			// Players' chat is read with its own capability and never by a key, and its terms are the
+			// organisation's owners' to accept: neither is to be had by the back door.
+			if (/^\/v1\/chat(?![a-z0-9_-])/i.test(route))
+				throw new ApiError(
+					403,
+					"Chat and its terms are not served through raw: use the server's Chat tab.",
+					'use_chat'
+				);
 			// The listener's log names the address of everyone who connected to it; 'serverLog' serves
 			// it, with those addresses for the site owner only.
 			if (/^\/v1\/audit(?![a-z0-9_-])/i.test(route))
@@ -998,6 +1080,32 @@ export const ACTIONS: Record<string, ActionDef> = {
 	}
 };
 
+/**
+ * The chat lines after `after`, oldest first, `limit` at most: the one request that reads the chat
+ * from the game. Two callers: the action above, for a reader's Chat tab, and the worker's chat
+ * rules (chat-look.ts), which give the read less time than a request usually gets. Players'
+ * messages: handed to the caller, and neither stored nor forwarded here.
+ */
+export async function readChat(
+	c: WardogsClient,
+	after: number,
+	limit: number,
+	timeoutMs?: number
+): Promise<ChatRead> {
+	const read = chatReadOf(
+		await c.json('GET', `/v1/chat?after=${after}&limit=${limit}`, undefined, timeoutMs)
+	);
+	if (!read) throw new GameError(502, 'The server did not return its chat.', 'bad_response');
+	return read;
+}
+
 const RAW_HEADERS = ['content-type', 'etag', 'retry-after'];
 
 export const ACTION_NAMES = Object.keys(ACTIONS);
+
+/**
+ * The action of that name, of the registry's own alone: a name that reaches here from a request
+ * path may be `constructor` or `toString`, which every object answers to and no action is.
+ */
+export const actionNamed = (name: string): ActionDef | undefined =>
+	Object.hasOwn(ACTIONS, name) ? ACTIONS[name] : undefined;

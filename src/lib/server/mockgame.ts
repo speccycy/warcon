@@ -15,6 +15,9 @@ import {
 	reservedIntoText,
 	reservedSlotsHeld
 } from '../reserved-doc';
+import { S_STATE } from '../config-fields';
+import { WELCOME_KEYS, WELCOME_LINES_KEY, welcomeLinesFromText } from '../welcome-doc';
+import { checkWelcome, refusedWelcome, WELCOME_LIMITS } from '../welcome-text';
 
 export const MOCK_PASSWORD = 'demo';
 
@@ -22,11 +25,37 @@ interface Player {
 	name: string;
 	steamId: string;
 	faction: string;
+	/** Season 3: the name the game made up for the player, which the others see while `anonymous` */
+	hiddenName: string;
+	anonymous: boolean;
 	kills: number;
 	deaths: number;
 	cash: number;
 	pingMs: number;
 }
+
+// Season 3's anonymous mode, as a live server's player list had it on 2026-11-12: every player
+// with a hidden name of one short word, the same one for more than one player now and then, and
+// about one player in a hundred with the mode on. The demo turns it on for more of them, among
+// the players who drift in (never a seeded regular, whom tests name), so the panel has some to show.
+const HIDDEN_NAMES = [
+	'Falcon',
+	'Badger',
+	'Heron',
+	'Otter',
+	'Weasel',
+	'Lynx',
+	'Marten',
+	'Raven',
+	'Ibex',
+	'Osprey',
+	'Jackal'
+];
+/** A player's hidden name, the same each time they join: from their SteamID. */
+const hiddenNameFor = (steamId: string): string =>
+	HIDDEN_NAMES[Number(BigInt(steamId) % BigInt(HIDDEN_NAMES.length))];
+/** Every third player to drift in has anonymous mode on. */
+const joinsAnonymous = (joiner: number): boolean => joiner % 3 === 2;
 interface Ban {
 	steamId: string;
 	bannedAtUtc: string;
@@ -83,24 +112,49 @@ interface State {
 	startedAt: number;
 	/** what GET /v1/feed reports (setMockFeed); null: a feed that is off */
 	feedReport: Record<string, unknown> | null;
+	/** Season 3's chat: the terms version accepted (0: none) and the lines kept for the map on */
+	chat: { accepted: number; seq: number; last: number; lines: ChatMessage[] };
 }
 
+/** A chat line as the game sends it (the official console's Season 3 client and field notes). */
+interface ChatMessage {
+	seq: number;
+	sentUtc: string;
+	channel: string;
+	faction: string | null;
+	steamId: string | null;
+	realName: string;
+	hiddenName: string | null;
+	anonymous: boolean;
+	text: string;
+	rawText: string;
+	ping: boolean;
+}
+
+// Season 3 adds the map Sabatulo (id Russia, game mode Moscow_KOTH_01) and the modifier Limited
+// Gear, which every map offers. A real server lists them only once its hosting provider has put
+// them on its allow lists; the demo has them.
 const MAPS = [
 	{ id: 'Kavkazi', displayName: 'Bakurani' },
 	{ id: 'Europe', displayName: 'Ozeti' },
-	{ id: 'NorthAmerica', displayName: 'Zestafona' }
+	{ id: 'NorthAmerica', displayName: 'Zestafona' },
+	{ id: 'Russia', displayName: 'Sabatulo' }
 ];
 const EXPERIENCES = [
 	{ id: 'Bakurani_KOTH_01', displayName: 'King of the Hill' },
 	{ id: 'Madrid_KOTH_01', displayName: 'King of the Hill' },
 	{ id: 'Detroit_KOTH_01', displayName: 'King of the Hill' },
+	{ id: 'Moscow_KOTH_01', displayName: 'King of the Hill' },
 	{ id: 'KOTH_InfantryOnly', displayName: 'Infantry' },
-	{ id: 'KOTH_Hardcore', displayName: 'Hardcore' }
+	{ id: 'KOTH_Hardcore', displayName: 'Hardcore' },
+	{ id: 'KOTH_LimitedGear', displayName: 'Limited Gear' }
 ];
+const MODIFIERS = ['KOTH_InfantryOnly', 'KOTH_Hardcore', 'KOTH_LimitedGear'];
 const EXPERIENCES_BY_MAP: Record<string, string[]> = {
-	Kavkazi: ['Bakurani_KOTH_01', 'KOTH_InfantryOnly', 'KOTH_Hardcore'],
-	Europe: ['Madrid_KOTH_01', 'KOTH_InfantryOnly', 'KOTH_Hardcore'],
-	NorthAmerica: ['Detroit_KOTH_01', 'KOTH_InfantryOnly', 'KOTH_Hardcore']
+	Kavkazi: ['Bakurani_KOTH_01', ...MODIFIERS],
+	Europe: ['Madrid_KOTH_01', ...MODIFIERS],
+	NorthAmerica: ['Detroit_KOTH_01', ...MODIFIERS],
+	Russia: ['Moscow_KOTH_01', ...MODIFIERS]
 };
 const LIGHTINGS = [
 	'DayStartClear',
@@ -113,6 +167,22 @@ const LIGHTINGS = [
 	'DayEndClear',
 	'DayLateRain'
 ].map((id) => ({ id, displayName: id.replace(/([a-z])([A-Z])/g, '$1 $2') }));
+// Sabatulo takes four of the lightings (the Season 3 notes; no route says so). What a real server
+// answers when asked for another there has not been seen: the demo refuses it, and denies a
+// rotation entry that names one.
+const LIGHTINGS_BY_MAP: Record<string, string[]> = {
+	Russia: ['DayClear', 'DayLateClear', 'DayLateGray', 'DayLateRain']
+};
+const mapTakes = (map: string, lighting: string) =>
+	!LIGHTINGS_BY_MAP[map] || LIGHTINGS_BY_MAP[map].includes(lighting);
+/**
+ * Whether the server would skip a rotation entry: a map, game mode, modifier or lighting it does not
+ * list, or a lighting the entry's map does not take.
+ */
+const deniedEntry = (e: { map: string; experiences: string[]; lighting: string }) =>
+	!MAPS.some((x) => x.id === e.map) ||
+	e.experiences.some((id) => !EXPERIENCES.some((x) => x.id === id)) ||
+	(!!e.lighting && (!LIGHTINGS.some((x) => x.id === e.lighting) || !mapTakes(e.map, e.lighting)));
 const ALTERNATORS_BY_MAP: Record<string, { tag: string; displayName: string }[]> = {
 	Kavkazi: [
 		{ tag: 'ZoneAlternator.Factory.Circle', displayName: 'Bakurani Factory Circle' },
@@ -144,7 +214,11 @@ const LIVE_BUILD_MISSING = new Set([
 	'POST /v1/rotation/save',
 	'PATCH /v1/settings',
 	// Season 2 (CL-516586) on
-	'GET /v1/feed'
+	'GET /v1/feed',
+	// Season 3 on
+	'GET /v1/chat/terms',
+	'POST /v1/chat/terms',
+	'GET /v1/chat'
 ]);
 const liveBuild = () => /^(1|true|yes)$/i.test(process.env.MOCK_LIVE_BUILD || '');
 // With MOCK_LIVE_ADDS=now as well, a slot added to the document is reserved at once while one taken
@@ -231,8 +305,117 @@ const CAPABILITY_ROUTES = [
 	'GET /v1/config',
 	'POST /v1/config/validate',
 	'PUT /v1/config',
-	'GET /v1/feed'
+	'GET /v1/feed',
+	'GET /v1/chat/terms',
+	'POST /v1/chat/terms',
+	'GET /v1/chat'
 ];
+
+// Season 3's in-game chat (the official console's client and demo, 2026-11-12; no live server
+// seen). A server asks for its chat terms to be accepted, by version, before it serves the chat:
+// until then GET /v1/chat answers 409, and its event feed sends nothing, which GET /v1/feed reports
+// as pausedForTerms. It keeps the last 500 lines of the map on, numbered from 1.
+const CHAT_TERMS_VERSION = 1;
+// The demo's own stand-in: a real server sends the game's terms.
+const CHAT_TERMS_TEXT = [
+	"Read these terms before viewing this demo server's chat. They stand in for the terms a real WARDOGS server sends.",
+	'- Chat is shown here only so that this server can be moderated.',
+	'- It is live, and is not to be recorded, stored, exported or shared beyond what moderating the server requires.',
+	'- Whoever accepts answers for how it is used.'
+].join('\n');
+const CHAT_KEEP = 500;
+const CHAT_DEFAULT_LIMIT = 100;
+const CHAT_MAX_LIMIT = 500;
+/** a new demo line every so often once the terms are accepted */
+const CHAT_EVERY_MS = 2500;
+/** [channel, what players saw, what was typed, a ping callout] */
+const CHAT_SCRIPT: [string, string, string, boolean][] = [
+	['Team', 'push the hill from the east side', 'push the hill from the east side', false],
+	['Global', 'anyone seen a medic around', 'anyone seen a medic around', false],
+	['Squad', 'reloading, cover me', 'reloading, cover me', false],
+	['Global', 'what the **** is that tank doing', 'what the hell is that tank doing', false],
+	['Team', 'Enemy spotted near the foundry', 'Enemy spotted near the foundry', true],
+	['Team', 'need ammo at the north point', 'need ammo at the north point', false],
+	['Global', 'gg that was close', 'gg that was close', false],
+	['Proximity', 'over here, behind the wall', 'over here, behind the wall', false],
+	['Vehicle', 'hold on, taking the hill', 'hold on, taking the hill', false],
+	['Team', 'Attack here', 'Attack here', true],
+	// what players type to the server: a Chat command and a Staff call rule answer these two, and
+	// on a server with neither they are chat like any other line
+	['Team', '!rules', '!rules', false],
+	[
+		'Global',
+		'!admin the tank at the north point is team killing',
+		'!admin the tank at the north point is team killing',
+		false
+	]
+];
+const FACTION_LABELS = ['RED', 'BLU', 'GRN'];
+
+/** Adds the demo lines that fell due since the last one: nothing before the terms are accepted. */
+function chatUpTo(s: State, now: number): void {
+	const c = s.chat;
+	if (c.accepted < CHAT_TERMS_VERSION || !s.players.length) return;
+	if (!c.last) c.last = now - CHAT_EVERY_MS * 4;
+	// a server left alone for a while does not come back with hundreds of lines at once
+	if (now - c.last > CHAT_EVERY_MS * 40) c.last = now - CHAT_EVERY_MS * 40;
+	while (now - c.last >= CHAT_EVERY_MS) {
+		c.last += CHAT_EVERY_MS;
+		const [channel, text, rawText, ping] = CHAT_SCRIPT[c.seq % CHAT_SCRIPT.length];
+		const who = s.players[(c.seq * 7) % s.players.length];
+		c.seq++;
+		// the chat names a side by its short label, as the console's notes have it (RED, BLU, GRN)
+		const side = s.factions.findIndex((f) => f.name === who.faction);
+		c.lines.push({
+			seq: c.seq,
+			sentUtc: new Date(c.last).toISOString(),
+			channel,
+			faction: FACTION_LABELS[side] ?? null,
+			steamId: who.steamId || null,
+			realName: who.name,
+			// as the player list has them: the others see the hidden name of a speaker in anonymous mode
+			hiddenName: who.hiddenName,
+			anonymous: who.anonymous,
+			text,
+			rawText,
+			ping
+		});
+	}
+	if (c.lines.length > CHAT_KEEP) c.lines.splice(0, c.lines.length - CHAT_KEEP);
+}
+
+/**
+ * One of the demo's players typing a line in its chat, for tests: `steamId` says who (the first on
+ * the list when it names nobody on). Nothing before the chat terms are accepted, as on a real
+ * server. Returns the line's number, 0 when no line was added.
+ */
+export function mockSay(
+	key: string,
+	text: string,
+	opts: { steamId?: string; channel?: string; typed?: string; anonymous?: boolean } = {}
+): number {
+	const s = stateFor(key);
+	const c = s.chat;
+	const who = s.players.find((p) => p.steamId === opts.steamId) ?? s.players[0];
+	if (c.accepted < CHAT_TERMS_VERSION || !who) return 0;
+	const side = s.factions.findIndex((f) => f.name === who.faction);
+	c.seq++;
+	c.lines.push({
+		seq: c.seq,
+		sentUtc: new Date().toISOString(),
+		channel: opts.channel ?? 'Team',
+		faction: FACTION_LABELS[side] ?? null,
+		steamId: who.steamId || null,
+		realName: who.name,
+		hiddenName: HIDDEN_NAMES[c.seq % HIDDEN_NAMES.length],
+		anonymous: !!opts.anonymous,
+		text,
+		rawText: opts.typed ?? text,
+		ping: false
+	});
+	if (c.lines.length > CHAT_KEEP) c.lines.splice(0, c.lines.length - CHAT_KEEP);
+	return c.seq;
+}
 
 // The schema live build CL-501228 reports from GET /v1/config (captured 2026-09-14; CL-499480's
 // was the same minus bWriteAuditLogFile and the per-key writable/lockedBy flags).
@@ -358,7 +541,17 @@ function seed(name: string): State {
 		d: number,
 		c: number,
 		p: number
-	): Player => ({ name: n, steamId: id, faction: f, kills: k, deaths: d, cash: c, pingMs: p });
+	): Player => ({
+		name: n,
+		steamId: id,
+		faction: f,
+		hiddenName: hiddenNameFor(id),
+		anonymous: false,
+		kills: k,
+		deaths: d,
+		cash: c,
+		pingMs: p
+	});
 	const state: State = {
 		serverName: name,
 		maxPlayers: 32,
@@ -478,10 +671,18 @@ function seed(name: string): State {
 		matchState: '',
 		matchId: crypto.randomUUID(),
 		startedAt: STARTED,
-		feedReport: null
+		feedReport: null,
+		chat: { accepted: 0, seq: 0, last: 0, lines: [] }
 	};
 	state.configText = seedConfig(state);
 	return state;
+}
+
+/** Turns a demo player's anonymous mode on or off (tests); false when nobody on has that SteamID. */
+export function setMockAnonymous(key: string, steamId: string, on: boolean): boolean {
+	const player = stateFor(key).players.find((p) => p.steamId === steamId);
+	if (player) player.anonymous = on;
+	return !!player;
 }
 
 /**
@@ -522,6 +723,20 @@ function seedConfig(s: State): string {
 		'[/Script/WDGame.WDGameStateSession]',
 		'bLockOverpopulatedTeamsConfig=true',
 		'OverpopulatedTeamThresholdConfig=2',
+		// Season 3's welcome popup, as the official console's demo has it: a line with a `//` in it is
+		// quoted, and its own quotes escaped.
+		...(liveBuild()
+			? []
+			: [
+					'bServerWelcomeMessageEnabled=True',
+					'ServerWelcomeMessageCloseDelaySeconds=5',
+					'bServerWelcomeMessageSkipForStreamers=False',
+					'!ServerWelcomeMessageLines=ClearArray',
+					'.ServerWelcomeMessageLines=<Header>Welcome to the demo server</>',
+					'.ServerWelcomeMessageLines=Be kind, play the objective and have fun.',
+					'.ServerWelcomeMessageLines=',
+					'.ServerWelcomeMessageLines="<text color=\\"#7FD6FF\\">https://warcon.example</>"'
+				]),
 		'',
 		'[/Script/WDGame.WDServerMapRotationSettings]',
 		`bEnabled=${s.rotation.enabled ? 'true' : 'false'}`,
@@ -540,13 +755,52 @@ function seedConfig(s: State): string {
 	].join('\r\n');
 }
 
+// Season 3's welcome popup: four keys beside the team balance ones, read when a match starts. The
+// descriptions are the official console's demo's; what a live server says of them has not been seen.
+const WELCOME_OVERRIDES = [
+	{
+		key: WELCOME_LINES_KEY,
+		appliesWhen: 'next-match',
+		description:
+			'Welcome popup lines, shown once when a player first deploys. Up to 128 lines of 128 visible characters, scrolling when taller than the popup; style with <Bold>, <Italic>, <Header> or <text color="#RRGGBB" size="8-24" fontface="Bold">. Links and other tags show as typed.'
+	},
+	{
+		key: 'bServerWelcomeMessageEnabled',
+		appliesWhen: 'next-match',
+		description: 'Shows the welcome popup from the next match.'
+	},
+	{
+		key: 'ServerWelcomeMessageCloseDelaySeconds',
+		appliesWhen: 'next-match',
+		description:
+			"Seconds the welcome popup's Close button stays locked so players read it first. 0 = no lock, up to 60."
+	},
+	{
+		key: 'bServerWelcomeMessageSkipForStreamers',
+		appliesWhen: 'next-match',
+		description: 'Players with streamer mode on skip the welcome popup.'
+	}
+];
+
 /**
- * The schema with the two launch-argument locks the TLR host runs with on live build CL-501228
- * (ServerName by -RCON_FixedServerName, Port by -RCONPort): `writable: false` plus `lockedBy`.
- * Only under MOCK_LIVE_BUILD, so the plain demo stays fully editable.
+ * The schema as the demo reports it. Plain, it has Season 3's welcome popup. Under MOCK_LIVE_BUILD
+ * it is live build CL-501228's, from before the popup, with the two launch-argument locks the TLR
+ * host runs with (ServerName by -RCON_FixedServerName, Port by -RCONPort): `writable: false` plus
+ * `lockedBy`. So the plain demo stays fully editable.
  */
 function configSections(): typeof CONFIG_SECTIONS {
-	if (!liveBuild()) return CONFIG_SECTIONS;
+	if (!liveBuild())
+		return CONFIG_SECTIONS.map((c) =>
+			c.section === S_STATE
+				? {
+						...c,
+						description:
+							'Team balance rules and the welcome message. The running match keeps its current values; the config values are read when a match starts.',
+						allowedKeys: [...c.allowedKeys, ...WELCOME_KEYS],
+						keyOverrides: WELCOME_OVERRIDES
+					}
+				: c
+		);
 	const pin = (key: string, lockedBy: string, appliesWhen: string) => ({
 		key,
 		appliesWhen,
@@ -584,6 +838,9 @@ export function restartMock(key: string, at = Date.now()): void {
 	const s = stateFor(key);
 	s.startedAt = at;
 	s.reserved = reservedFromText(s.configText).filter((id) => /^\d{17}$/.test(id));
+	// A new process numbers its chat from 1 again. Whether a real server keeps an acceptance of
+	// its chat terms across a restart is not known; the demo keeps it.
+	s.chat = { accepted: s.chat.accepted, seq: 0, last: 0, lines: [] };
 	if (startupMap()) comeUp(s);
 }
 
@@ -650,10 +907,14 @@ function tick(s: State): void {
 	// Someone new drifts in now and then; quicker while the server is quiet, so joins (and the
 	// triggers that watch for them) are easy to see on the demo.
 	if (s.players.length < 16 && Math.random() < (s.players.length < 12 ? 0.2 : 0.04)) {
+		const joiner = s.nextJoiner++;
+		const steamId = String(76561198100000401n + BigInt(joiner));
 		const p: Player = {
-			name: JOINERS[s.nextJoiner % JOINERS.length],
-			steamId: String(76561198100000401n + BigInt(s.nextJoiner++)),
+			name: JOINERS[joiner % JOINERS.length],
+			steamId,
 			faction: s.factions[Math.floor(Math.random() * s.factions.length)].name,
+			hiddenName: hiddenNameFor(steamId),
+			anonymous: joinsAnonymous(joiner),
 			kills: 0,
 			deaths: 0,
 			cash: 0,
@@ -763,6 +1024,8 @@ function resetScores(s: State): void {
 	}
 	s.matchStart = Date.now();
 	s.matchId = crypto.randomUUID();
+	// The chat is kept for the map on: a new match starts with none, its numbering going on.
+	s.chat.lines = [];
 	// Kills, deaths and cash start again, as on the game's scoreboard.
 	for (const p of s.players) {
 		p.kills = 0;
@@ -927,9 +1190,57 @@ export function mockHandle(
 		});
 	}
 	if (route === 'GET feed') {
+		const report = s.feedReport ?? {
+			enabled: false,
+			endpointCount: 0,
+			anyUnhealthy: false,
+			endpoints: []
+		};
+		// A Season 3 report (one that carries the flag) follows the terms; a Season 2 one has none.
 		return ok(
-			s.feedReport ?? { enabled: false, endpointCount: 0, anyUnhealthy: false, endpoints: [] }
+			'pausedForTerms' in report
+				? { ...report, pausedForTerms: s.chat.accepted < CHAT_TERMS_VERSION }
+				: report
 		);
+	}
+	if (route === 'GET chat/terms') {
+		return ok({
+			requiredVersion: CHAT_TERMS_VERSION,
+			acceptedVersion: s.chat.accepted,
+			accepted: s.chat.accepted >= CHAT_TERMS_VERSION,
+			text: CHAT_TERMS_TEXT
+		});
+	}
+	if (route === 'POST chat/terms') {
+		if (b.version === undefined || b.version === null)
+			return fail(400, 'Provide the terms version to accept.', 'missing_version');
+		if (Number(b.version) !== CHAT_TERMS_VERSION)
+			return fail(
+				400,
+				`Terms version ${b.version} is not the version this server requires (${CHAT_TERMS_VERSION}).`,
+				'terms_version_mismatch'
+			);
+		s.chat.accepted = CHAT_TERMS_VERSION;
+		log(s, 'COMMAND', `chat terms accept ${CHAT_TERMS_VERSION}`);
+		return ok({
+			ok: true,
+			pending: false,
+			message: `OK: chat terms version ${CHAT_TERMS_VERSION} accepted.`
+		});
+	}
+	if (route === 'GET chat') {
+		if (s.chat.accepted < CHAT_TERMS_VERSION)
+			return fail(
+				409,
+				'The chat terms have not been accepted on this server.',
+				'chat_terms_not_accepted'
+			);
+		chatUpTo(s, Date.now());
+		const after = Number(qs.get('after')) || 0;
+		const asked = Number(qs.get('limit')) || CHAT_DEFAULT_LIMIT;
+		const limit = Math.min(CHAT_MAX_LIMIT, Math.max(1, Math.trunc(asked)));
+		const messages = s.chat.lines.filter((l) => l.seq > after).slice(0, limit);
+		return ok({ latestSeq: s.chat.seq, messages, count: messages.length });
 	}
 	if (route === 'GET server-id') {
 		// Stable per demo server, standing in for the join code the WARDOGS backend issues.
@@ -943,6 +1254,8 @@ export function mockHandle(
 			lighting: s.current.lighting,
 			alternator: s.current.alternator,
 			scoreTick: { current: s.scoreTick, min: 18, max: 30 },
+			// Season 3: the welcome popup's limits, which the editors of its text check against.
+			...(liveBuild() ? {} : { welcomeMessage: { ...WELCOME_LIMITS } }),
 			// Live builds CL-499480 and CL-501228 send neither the cap nor the match clock.
 			...(liveBuild()
 				? {}
@@ -961,7 +1274,12 @@ export function mockHandle(
 		});
 	}
 	if (route === 'GET players') {
-		return ok({ players: s.players });
+		// a build from before Season 3 says nothing of hidden names
+		return ok({
+			players: liveBuild()
+				? s.players.map(({ hiddenName: _h, anonymous: _a, ...before }) => before)
+				: s.players
+		});
 	}
 	if (p[0] === 'players' && p[1]) {
 		const player = s.players.find((x) => x.steamId === p[1]);
@@ -1059,10 +1377,17 @@ export function mockHandle(
 		if (!MAPS.some((x) => x.id === b.map)) {
 			return fail(400, `Unknown map '${b.map}'.`);
 		}
+		if (b.lighting && !mapTakes(b.map, b.lighting)) {
+			return fail(400, `Lighting '${b.lighting}' is not available on ${b.map}.`);
+		}
+		// no lighting asked for: the one on carries over where the new map takes it
+		const carried = mapTakes(b.map, s.current.lighting)
+			? s.current.lighting
+			: LIGHTINGS_BY_MAP[b.map][0];
 		applyEntry(s, {
 			map: b.map,
 			experiences: b.experiences?.length ? b.experiences : s.current.experiences,
-			lighting: b.lighting || s.current.lighting,
+			lighting: b.lighting || carried,
 			zoneAlternator: b.zoneAlternator || '',
 			denied: false
 		});
@@ -1088,6 +1413,9 @@ export function mockHandle(
 		if (!LIGHTINGS.some((x) => x.id === b.lighting)) {
 			return fail(400, `Unknown lighting '${b.lighting}'.`);
 		}
+		if (!mapTakes(s.current.map, b.lighting)) {
+			return fail(400, `Lighting '${b.lighting}' is not available on ${s.current.map}.`);
+		}
 		s.current.lighting = b.lighting;
 		log(s, 'COMMAND', `weather ${b.lighting}`);
 		return ok({ message: `Weather changed to ${b.lighting}.` });
@@ -1103,13 +1431,13 @@ export function mockHandle(
 		if (!MAPS.some((x) => x.id === b.map)) {
 			return fail(400, `Unknown map '${b.map}'.`);
 		}
-		s.rotation.entries.push({
+		const added = {
 			map: b.map,
 			experiences: b.experiences?.length ? b.experiences : ['KOTH_InfantryOnly'],
 			lighting: b.lighting || 'DayClear',
-			zoneAlternator: b.zoneAlternator || '',
-			denied: false
-		});
+			zoneAlternator: b.zoneAlternator || ''
+		};
+		s.rotation.entries.push({ ...added, denied: deniedEntry(added) });
 		if (s.rotation.entries.length === 2) {
 			s.rotation.nextIndex = 1;
 		}
@@ -1252,6 +1580,26 @@ export function mockHandle(
 				412
 			);
 		}
+		// Season 3: a welcome popup with a line over a limit, or a tag the popup would not keep, is
+		// refused with the line named (the WARDOGS team's notes; the answer's shape is the one the
+		// official console's demo gives its other refusal, and has not been seen from a live server).
+		const popup = liveBuild()
+			? []
+			: refusedWelcome(checkWelcome(welcomeLinesFromText(text) ?? [], WELCOME_LIMITS));
+		if (popup.length) {
+			return ok(
+				{
+					ok: false,
+					error: { code: 'config_invalid', message: 'The config was refused.' },
+					errors: popup.map((i) => ({
+						section: S_STATE,
+						key: WELCOME_LINES_KEY,
+						message: i.message
+					}))
+				},
+				400
+			);
+		}
 		const outcomes = configSections()
 			.filter((c) => text.includes(`[${c.section}]`))
 			.map((c) => ({
@@ -1290,10 +1638,7 @@ export function mockHandle(
 			s.rotation.mode = rot.mode;
 			const was = s.rotation.nowIndex;
 			const playing = s.rotation.entries[was];
-			s.rotation.entries = rot.entries.map((e) => ({
-				...e,
-				denied: e.experiences.some((id) => !EXPERIENCES.some((x) => x.id === id))
-			}));
+			s.rotation.entries = rot.entries.map((e) => ({ ...e, denied: deniedEntry(e) }));
 			const keep = playing
 				? s.rotation.entries.findIndex(
 						(e) =>

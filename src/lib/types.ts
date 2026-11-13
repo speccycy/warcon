@@ -96,6 +96,8 @@ export interface Features {
 	liveSettings: boolean;
 	/** GET /v1/server-id: the join code the WARDOGS backend issued the server (CL-501228+) */
 	serverId: boolean;
+	/** GET /v1/chat and GET, POST /v1/chat/terms: the in-game chat and its terms (Season 3) */
+	chat: boolean;
 }
 
 export interface FactionScore {
@@ -130,6 +132,11 @@ export interface Player {
 	deaths: number;
 	cash: number;
 	ping: number | null;
+	/**
+	 * The name the other players see in place of this one's own. There only while the player is in
+	 * the game's anonymous mode, which Season 3 builds report ($lib/anonymous).
+	 */
+	hiddenName?: string;
 }
 /** What the worker last saw on a server: the dashboard, server page and players page render this. */
 export interface LiveView {
@@ -413,6 +420,9 @@ export interface DossierSession {
 	serverId: string;
 	serverName: string;
 	name: string;
+	/** the name the other players saw in place of `name`, when the session was (at least partly)
+	 *  played in anonymous mode; null otherwise */
+	hiddenName: string | null;
 	faction: string | null;
 	joinedAt: string;
 	lastSeen: string;
@@ -448,6 +458,9 @@ export interface DossierView {
 	steamId: string;
 	name: string;
 	names: string[];
+	/** the names the other players saw for them while they played in the game's anonymous mode
+	 *  ($lib/anonymous), newest first, each with the sessions it was seen in */
+	hiddenNames: { name: string; firstSeen: string; lastSeen: string; sessions: number }[];
 	/** the names the kill feed showed for them that were not the ones the server listed them under,
 	 *  newest first, on the servers the viewer can open; `holder` is another listed player whose name
 	 *  it read as */
@@ -587,7 +600,9 @@ export type TriggerKind =
 	| 'live_name'
 	| 'restart_skip'
 	| 'weather_cycle'
-	| 'death_whisper';
+	| 'death_whisper'
+	| 'chat_command'
+	| 'staff_call';
 
 export interface TriggerView {
 	id: string;
@@ -614,6 +629,12 @@ export interface TriggerView {
 		since: string | null;
 		restored: boolean;
 	} | null;
+	/**
+	 * a chat rule's standing ($lib/rule-kinds CHAT_KINDS): what it waits for before it can read the
+	 * chat ('' when it reads it): the game's chat terms to be accepted, a build that serves the chat,
+	 * or a read that keeps failing to succeed; null until the worker has looked
+	 */
+	chatWait?: '' | 'terms' | 'build' | 'failing' | null;
 }
 
 export interface DryRunResult {

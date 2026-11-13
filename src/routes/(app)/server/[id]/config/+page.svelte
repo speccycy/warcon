@@ -19,6 +19,8 @@
 		type FeedReport
 	} from '$lib/feed-report';
 	import type { ConfigDoc, ConfigResult, Status } from '$lib/types';
+	import { WELCOME_LINES_KEY, welcomeRefusals } from '$lib/welcome-doc';
+	import { WELCOME_LIMITS, welcomeLimitsOf, type WelcomeLimits } from '$lib/welcome-text';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -29,6 +31,8 @@
 	let tickMin = $state(18);
 	let tickMax = $state(30);
 	let tickKnown = $state(false);
+	/** the welcome popup's limits as the server's status reports them (Season 3 on); null when it reports none */
+	let welcomeLimits = $state<WelcomeLimits | null>(null);
 	let sponsor = $state('');
 	let sponsorShown = $derived(banners[id] ?? '');
 	let doc = $state<ConfigDoc | null>(null);
@@ -208,6 +212,10 @@
 			'The server started without a feed.',
 			"bEventFeedEnabled=True was not in its file when it last started: add this panel's lines and restart the server."
 		],
+		terms: () => [
+			'The game is holding the feed back until the chat terms are accepted.',
+			`From Season 3 a server sends no events, kills included, until its chat terms have been accepted. An owner of ${data.server.orgName} reads and accepts them on this server's Chat tab; nothing in the server's file needs changing.`
+		],
 		empty: () => [
 			'The feed is on, but lists no endpoint.',
 			"Add this panel's EventFeedEndpoints line and restart the server."
@@ -298,7 +306,10 @@
 	}
 	async function loadTick() {
 		try {
-			const st = await rconGet<Status>(id, 'status');
+			// The status as the game sent it carries the welcome popup's limits, which the shaped one
+			// has no field for; it is there for those who may apply the config, the popup's editors.
+			const st = await rconGet<Status>(id, 'status', admin ? { raw: 1 } : undefined);
+			welcomeLimits = welcomeLimitsOf(st.raw?.welcomeMessage);
 			if (st.scoreTickMin) tickMin = st.scoreTickMin;
 			if (st.scoreTickMax) tickMax = st.scoreTickMax;
 			if (st.scoreTick !== null) {
@@ -362,10 +373,29 @@
 		return r;
 	}
 	async function runConfig(action: 'configValidate' | 'configApply') {
-		busy = true;
 		result = null;
 		failure = '';
 		lineErrors = [];
+		// The game refuses a document whose welcome popup has a line over a limit or a tag it would
+		// not keep. Said here first, with the line named, when this edit is what changed the text;
+		// it can still be sent, since the game's word on its own rules is the one that counts.
+		const popup =
+			action === 'configApply'
+				? welcomeRefusals(text, doc?.text ?? '', welcomeLimits ?? WELCOME_LIMITS)
+				: [];
+		if (popup.length) {
+			const more = popup.length > 1 ? ` ${popup.length - 1} more under the popup's text.` : '';
+			const send = await confirmDialog(
+				`${popup[0].message}${more} The game refuses a document like that. Send it anyway?`,
+				{ title: 'Welcome popup', okLabel: 'Send anyway' }
+			);
+			if (!send) {
+				failure = 'The welcome popup has text the game refuses, so nothing was sent.';
+				lineErrors = popup.map((i) => ({ key: WELCOME_LINES_KEY, message: i.message }));
+				return;
+			}
+		}
+		busy = true;
 		try {
 			let r = await rconPost<ConfigResult>(
 				id,
@@ -608,7 +638,9 @@
 							: 'switched off'} in the server's file · {report.endpointCount} endpoint{report.endpointCount ===
 						1
 							? ''
-							: 's'} · read {fmtAgo(reportAt)}{/if}
+							: 's'}{report.pausedForTerms ? ' · held back until the chat terms are accepted' : ''} ·
+						read
+						{fmtAgo(reportAt)}{/if}
 				</span>
 				{#if !reportUnserved}
 					<button class="ml-auto btn btn-sm" disabled={reportBusy} onclick={readReport}
@@ -729,11 +761,12 @@
 			tickRange={tickKnown ? { min: tickMin, max: tickMax } : null}
 			liveRoutes={data.features.liveSettings}
 			nameRule={data.liveName ? `/server/${encodeURIComponent(id)}/automation` : null}
+			{welcomeLimits}
 		/>
 		<p class="note mt-4">
-			Fields edit the file one line at a time, so keys the form does not know (rotation entries, ban
-			and reserved lists, the RCON block) and any comments stay exactly as they are. Switch to Raw
-			file to see or edit the whole document.
+			Fields edit the file one line at a time (the welcome popup's text, its own lines), so keys the
+			form does not know (rotation entries, ban and reserved lists, the RCON block) and any comments
+			stay exactly as they are. Switch to Raw file to see or edit the whole document.
 		</p>
 	{:else}
 		<textarea

@@ -6,6 +6,7 @@ import type { ListKind } from './types';
 
 export const CAPABILITIES = [
 	'server.view',
+	'chat.read',
 	'chat.send',
 	'players.kick',
 	'players.kill',
@@ -50,6 +51,11 @@ export const CAPABILITY_INFO: Record<Capability, CapabilityInfo> = {
 	'server.view': {
 		label: 'View',
 		hint: 'What is happening on the server: status, players, kills, rotation, who is banned and who holds a reserved slot, analytics, leaderboards and player stats.',
+		group: 'read'
+	},
+	'chat.read': {
+		label: 'Read chat',
+		hint: "Read the in-game chat as players type it, to moderate the server, once an owner has accepted the game's chat terms; and save the rules that answer what players type. Nothing of it is kept.",
 		group: 'read'
 	},
 	'chat.send': {
@@ -122,7 +128,7 @@ export const CAPABILITY_INFO: Record<Capability, CapabilityInfo> = {
 	},
 	'rcon.raw': {
 		label: 'Raw RCON',
-		hint: 'Call any /v1 route on the game server directly, except the config document.',
+		hint: 'Call any /v1 route on the game server directly, except the config document and the chat.',
 		group: 'manage'
 	}
 };
@@ -168,11 +174,23 @@ const OPERATOR: Capability[] = [
 	'players.notes'
 ];
 
-/** What each built-in role starts with; owners may change them per organisation. */
+/**
+ * Capabilities an API key never holds, whatever its row says. Players' chat is shown to the people
+ * who moderate a server, under the game's chat terms (it is not to be recorded, stored or
+ * exported), so it is not handed to a program. Nor does a key save a rule that has the panel read
+ * the chat (a Chat command, a Staff call): saving one needs this capability (server/triggers.ts).
+ */
+export const PEOPLE_ONLY: readonly Capability[] = ['chat.read'];
+
+/**
+ * What each built-in role starts with; owners may change them per organisation. Reading chat is
+ * in none of them, the admin role included: an organisation's owners decide who reads what its
+ * players type.
+ */
 export const BUILTIN_CAPABILITIES: Record<BuiltinRole, Capability[]> = {
 	viewer: ['server.view'],
 	operator: OPERATOR,
-	admin: [...CAPABILITIES]
+	admin: CAPABILITIES.filter((c) => c !== 'chat.read')
 };
 
 export const isBuiltinRole = (v: unknown): v is BuiltinRole =>

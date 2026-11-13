@@ -1,7 +1,7 @@
 # WARDOGS dedicated-server RCON API (WDRCON)
 
 Reverse-engineered on 2026-09-08 from the official web console at `http://rcon.wardogs.com`, re-checked
-against the 2026-09-10 and 2026-09-14 redeploys of the site
+against the 2026-09-10, 2026-09-14 and 2026-11-12 (Season 3) redeploys of the site
 (`js/api.js`, `js/mock-server.js`, `js/config-editor.js`, `ServerSettings.ini`) and against live builds
 CL-501228 on 2026-09-14 and CL-507060 (update 0.1.2) on 2026-09-30. The console is a
 static, plain-HTTP-only site that talks to the game server **directly from the browser**, which is
@@ -54,9 +54,9 @@ Warcon, and Warcon's own process talks plain HTTP to the listener.
 | GET | `/v1/reserved-slots` | | `{ reservedSlots:[steamId], count }` | Permanent only on real servers (the console carries a `reservedExpiry` flag and `expiresAtUtc`, but only its mock sets them). The list has no length limit: anyone on it skips the join queue; `MaxReservedSlots` only says how many player slots are held back for them. |
 | POST | `/v1/reserved-slots` | `{ steamId }` | `{ message }` | **Not served by live builds CL-499480 / CL-501228.** Both the console (since 2026-09-14) and Warcon then edit `DefaultReservedPlayerIds` in the config document instead: `GET /v1/config`, add the id, `PUT /v1/config` with `If-Match` (`src/lib/reserved-doc.ts`, `reservedViaConfig` in `actions.ts`); Warcon keeps the live-route error codes (`already_reserved`, `reserved_not_found`) so the org list sync behaves the same either way. The console's mock refused adds beyond `MaxReservedSlots` with a `reserved_full` 409; no real server does, and Warcon no longer imitates it. **The running server does not re-read the array until it restarts** (seen 2026-09-15 on a CL-501228 host: withdrawn from the document, still returned by `GET /v1/reserved-slots` five minutes later, and the 24-hour self-restart is when it clears). Warcon re-reads the live list after every document edit and reports `pendingRestart`; the slots page badges such ids "leaves at restart" / "arrives at restart" and offers no second Withdraw. `MOCK_LIVE_BUILD` reproduces it. |
 | DELETE | `/v1/reserved-slots/{steamId}` | | `{ message }` | **Not served by live builds**; same document fallback. |
-| GET | `/v1/catalog/maps` | | `{ maps:[{id, displayName}] }` | Map ids: `Kavkazi` (Bakurani), `Europe` (Ozeti), `NorthAmerica` (Zestafona). |
-| GET | `/v1/catalog/lightings` | | `{ lightings:[{id, displayName}] }` | `DayStartClear`, `DayEarlyClear`, `DayEarlyFog`, `DayClear`, `DayLateClear`, `DayLateGray`, `DayLateGrayFog`, `DayEndClear`; Season 2 (CL-516586) adds the rain preset `DayLateRain` (the official console's demo data and map art have it since 2026-10-15). Warcon's pickers list whatever the server sends. |
-| GET | `/v1/catalog/experiences` | | `{ experiences:[{id, displayName}] }` | Game modes (`*_KOTH_01`) and modifiers (`KOTH_InfantryOnly`, `KOTH_Hardcore`). |
+| GET | `/v1/catalog/maps` | | `{ maps:[{id, displayName}] }` | Map ids: `Kavkazi` (Bakurani), `Europe` (Ozeti), `NorthAmerica` (Zestafona) and, from Season 3, `Russia` (Sabatulo). |
+| GET | `/v1/catalog/lightings` | | `{ lightings:[{id, displayName}] }` | `DayStartClear`, `DayEarlyClear`, `DayEarlyFog`, `DayClear`, `DayLateClear`, `DayLateGray`, `DayLateGrayFog`, `DayEndClear`; Season 2 (CL-516586) adds the rain preset `DayLateRain` (the official console's demo data and map art have it since 2026-10-15). Warcon's pickers list whatever the server sends, less what the map picked does not take: the list is one for every map, though Sabatulo takes four of them (Season 3, below). |
+| GET | `/v1/catalog/experiences` | | `{ experiences:[{id, displayName}] }` | Game modes (`*_KOTH_01`; Season 3's `Moscow_KOTH_01` is Sabatulo's) and modifiers (`KOTH_InfantryOnly`, `KOTH_Hardcore`, Season 3's `KOTH_LimitedGear`). Nothing in the answer says which an id is: a game mode is named for its place, a modifier for the mode it changes (`isMod` in `src/lib/format.ts`). |
 | GET | `/v1/catalog/maps/{map}/experiences` | | `{ map, experiences:[id], count }` | |
 | GET | `/v1/catalog/maps/{map}/alternators` | | `{ map, alternators:[{index, tag, displayName}], count }` | Control-zone alternators, e.g. `ZoneAlternator.Bakurani.Default.Circle`; `index`/`map`/`count` appeared in CL-501228. |
 | POST | `/v1/match/map` | `{ map, experiences?, lighting?, zoneAlternator? }` | `{ message }` | Travels when the match-end screen finishes. |
@@ -125,6 +125,202 @@ player list's fields were not seen (the server was empty). The RCON block's `all
 section allows one, so hosts set it outside `ServerSettings.ini`, and no route reports it.
 Whispers and broadcasts are capped (see `/v1/broadcast` above).
 
+### Season 3, live build CL-533689 (the team's server notes, the console's redeploy and a first live read, all 2026-11-12)
+
+**The rotation.** From the notes the WARDOGS team sent server admins on 2026-11-12:
+
+- A new map, **Sabatulo**: `Map="Russia"`, game mode `Moscow_KOTH_01`.
+- A new modifier, **Limited Gear** (`KOTH_LimitedGear`): it limits the vendor to a fixed list of
+  items and turns off some stationary weapons and the hot-zone magnet buildable. It is not a game
+  mode: it goes on a game mode as Infantry Only and Hardcore do, the game mode first, on any map
+  and beside other modifiers, as in
+  `+RotationEntries=(Map="Europe",Experiences="Madrid_KOTH_01+KOTH_InfantryOnly+KOTH_LimitedGear",Lighting="DayClear")`.
+  An entry with the modifier alone has no game mode and starts no match. (The notes say this of
+  Limited Gear. Whether an Infantry Only or Hardcore entry needs a game mode too has not been seen:
+  the console's demo rotation has an Infantry Only entry with none, so Warcon marks only the first.)
+- **Allow lists.** A server plays only the maps and experiences on its allow lists,
+  `+AllowedMaps=Russia`, `+AllowedExperiences=Moscow_KOTH_01` and
+  `+AllowedExperiences=KOTH_LimitedGear` under `[/Script/WDGame.WDServerMapRotationSettings]` in the
+  hosting provider's patch `Game.ini`. A host cannot set them in `ServerSettings.ini`, and a
+  rotation entry that names a map, game mode or lighting not on the lists is skipped. (Rain was
+  the same in Season 2: a server lists `DayLateRain` only where it is allowed.)
+- **Sabatulo takes four lightings**: `DayClear`, `DayLateClear`, `DayLateGray` and `DayLateRain`.
+  The notes spell the third `DayLateGrey`; the console's table, its demo data and its art
+  (`img/maps/Russia/`, those four alone) all have `DayLateGray`, so an entry written as the notes
+  have it names a lighting no server lists. No route reports which lightings a map takes: the
+  console hard-codes it (`MAP_LIGHTINGS` in its `js/app.js`) and narrows its lighting picker by
+  it, and Warcon does the same (`takesLighting` in `src/lib/format.ts`). What the game answers
+  when asked for another lighting on Sabatulo (a rotation entry, `POST /v1/match/map`,
+  `PUT /v1/world/lighting`) has not been seen; the demo server refuses it and denies the entry.
+
+What Warcon does with it: the pickers offer Sabatulo its four lightings and treat Limited Gear as a
+modifier; the Map rotation tab marks an entry that names something the server does not list, a
+lighting its map does not take, or Limited Gear with no game mode, and shows `denied` from
+`GET /v1/rotation` beside the staged entries too; the Weather cycle rule passes over the lightings
+Sabatulo does not take while the server is on it, and holds back a change decided before the
+server moved there. `MOCK_LIVE_BUILD` or not, the demo server lists
+the Season 3 map, game mode and modifier.
+
+**Live servers that day.** At 14:22 to 14:32 UTC every hosted server that answered (79) still
+ran Season 2's `++Wardogs+Live-CL-516586`; by 14:53 UTC five reported
+**`++Wardogs+Live-CL-533689`**. One of those, read through the panel (`capabilities`, the raw
+status and the catalog):
+
+- **34 routes**: Season 2's 31 and exactly `GET /v1/chat`, `GET /v1/chat/terms` and
+  `POST /v1/chat/terms`. Nothing else in the document changed (`apiVersion` 1, the same limits).
+- **Status** gains `welcomeMessage: { maxLines: 128, maxLineLength: 128, minFontSize: 8,
+  maxFontSize: 24, maxCloseDelaySeconds: 60 }` and `afk: { timeoutSeconds: 600,
+  minTimeoutSeconds: 300, maxTimeoutSeconds: 1800 }`.
+- **Catalog**: the map `Russia`, the game mode `Moscow_KOTH_01` and the modifier
+  `KOTH_LimitedGear`, and beside it a second id, `LimitedGear`, without the mode's prefix (Warcon
+  reads both as the modifier). That server listed seven lightings (the two fog presets were not
+  among them, the grey one is `DayLateGray`) and no `Bakurani_KOTH_01`: what a server lists is
+  its own.
+- What a live catalog's names look like, which the demo's do not: a map's `displayName` is its id
+  (`Kavkazi`, `Russia`), an experience's is `Moscow KOTH 01` or `KOTH LimitedGear`, a lighting's
+  is its id, and the status names the map as players know it (`Bakurani`). So "Sabatulo" comes
+  from Warcon's own table (`MAP_DISPLAY`), not from the game.
+- **A feed that sends nothing.** A second server, read at 15:37 UTC, 21 minutes after it
+  restarted onto the build, with 99 players on Sabatulo and a match in play: the panel had
+  received no batch since the restart, and the game's `GET /v1/feed` reported the feed enabled,
+  its one endpoint healthy, `sentTotal` 0, nothing queued and no HTTP answer yet. With lines that
+  work the game had sent nothing at all, which is what `pausedForTerms` below describes (the
+  panel that read it did not yet pass the flag on, so the flag itself was not seen).
+
+**The welcome popup.** From the notes the WARDOGS team sent server admins on 2026-11-12 ("Server
+Welcome Messages") and the check the console runs on each line (`js/welcome-text.js`, a port of
+Unreal's rich text markup reader):
+
+- The four keys sit in `[/Script/WDGame.WDGameStateSession]` and apply from the next match:
+  `ServerWelcomeMessageLines` (the text), `bServerWelcomeMessageEnabled`,
+  `ServerWelcomeMessageCloseDelaySeconds` (the Close button stays locked for 0 to 60 seconds) and
+  `bServerWelcomeMessageSkipForStreamers`. The console writes the text as the server writes any
+  array, `!ServerWelcomeMessageLines=ClearArray` and one `.ServerWelcomeMessageLines=` line for
+  each line of the popup (`.` adds a value even when the list has it, where `+` would add a blank
+  or a repeated line once), an empty value for a blank spacer.
+- A line is plain text and tags. A tag is `<Name>text</>`, or `<Name attr="value" …>text</>` with
+  one space before each attribute and straight double quotes, always closed by `</>`; the text of
+  a tag ends at the first `</>`, so tags do not nest. The popup keeps `<Header>`, `<Bold>` and
+  `<Italic>` (any tag without attributes is taken for a style; what the game draws for a name it
+  has no style for has not been seen) and `<text>` with `color="#RRGGBB"`, `size="8"` to `"24"`
+  and `fontface="Bold"` or `"Italic"`, in any mix. Any other tag with attributes (a link, a Header
+  with a colour) shows as typed. `&lt;` `&gt;` `&amp;` `&quot;` are the characters themselves.
+- The limits: 128 lines, 128 visible characters a line (tags do not count, an entity counts as
+  one), font sizes 8 to 24; `GET /v1/status` reports them as `welcomeMessage` (seen on CL-533689,
+  above). In game, anything over a limit is cut. Over RCON the document is refused, with the line
+  named, when the popup has more lines than the limit, a line longer than the limit, a tag with
+  attributes that is not `<text>`, a `<text>` attribute other than `color`, `size` and
+  `fontface`, or a size that is not a whole number in range written plainly (`16`, not `016`,
+  `16.5` or ` 16`). The console's own demo server does not act that refusal out, so its shape on
+  the wire has not been seen: the demo refuses its AFK timeout with 400 `config_invalid`, "The
+  config was refused." and `errors: [{ section, key, message }]`, and Warcon's demo answers a
+  refused popup the same way.
+
+What Warcon does with it: the Config tab's form has the three plain keys as fields and an editor
+for the text (`src/lib/welcome-text.ts` reads a line as the console does, says what the game
+refuses and what it would show as typed, and draws the preview; `src/lib/welcome-doc.ts` reads
+and writes the array). It checks against the limits the status reports, read from the status as
+the game sent it (`raw`, which only Config & settings gets), and otherwise against the ones above.
+A line goes into the file in quotes, its own quotes and backslashes escaped, when it starts with a
+quote, has white space at either end, ends in a backslash or holds `//` (the console's rule), and
+also when it holds `{`, `}` or `|`: Unreal's own reader of such files drops braces and ends a line
+at a bar outside quotes, and whether the game's does has not been seen. No route or action is the
+popup's own; an older build shows no sign of it (no limits, no key in its `sections`), which the
+form says in a note without locking anything, since `sections` has been wrong about what a server
+takes before. The demo server has the popup (limits, the four keys in its schema, a seeded text,
+the refusal) except under `MOCK_LIVE_BUILD`, which stands in for a build from before it.
+
+The live read above confirms the limits in the status, the same five numbers. Not seen on a live
+server: the rest (the document was not read); whether `sections` names the four keys; whether a
+line over a limit written into the file by hand makes the game refuse every later apply over RCON
+(reserved slots, the live name and the rotation go through the same document); how often a player
+gets the popup.
+
+**The rest of the redeploy** (13:22 UTC, the console's build stamp `eb816a7`). Read from the
+console's own client and demo code, so the shapes are what the console expects of a Season 3
+server. The live read above confirms the three chat routes and the two status fields, and shows
+a feed sending nothing; what the chat routes answer, the feed's flag itself and the players' new
+fields have not been seen from a live server. Warcon uses the feed's flag and the three chat
+routes:
+
+- **Chat.** `GET /v1/chat/terms` answers `{ requiredVersion, acceptedVersion, accepted, text }` and
+  `POST /v1/chat/terms { version }` accepts them (`{ ok, pending, message }`; 400 `missing_version`
+  or `terms_version_mismatch`). Until then `GET /v1/chat` answers 409 `chat_terms_not_accepted`;
+  after, `GET /v1/chat?after=<seq>&limit=<n>` answers `{ latestSeq, messages:[{ seq, sentUtc,
+  channel, faction, steamId, realName, hiddenName, anonymous, text, rawText, ping }], count }`:
+  `text` as players saw it (the chat filter's stars), `rawText` as typed, `ping` for a ping
+  callout, channels such as Team, Global, Squad, Proximity and Vehicle. The console shows its Chat
+  view when `capabilities` lists all three routes, reads 200 messages at a time every 3 s, and
+  keeps 1,000 rows. Its bundled terms (version 1; a server may send its own text): chat is shown
+  only so that the server can be moderated, is live and held only in the server's memory for the
+  current map, and "You must not record, store, export, publish or share players' chat or
+  identities beyond what moderating this server requires."
+  The console's other bundled points: chat is not stored for the reader by Bulkhead, the reader
+  answers for the privacy and data-protection law that applies to them, and "Bulkhead may revoke
+  access for misuse." The console's config schema has no key for an acceptance.
+  What Warcon does with them (`src/lib/chat-read.ts`, the actions `chatTerms`, `chatTermsAccept`
+  and `chat`): the server's Chat tab shows the terms and the lines to those who hold _Read chat_
+  (the organisation's owners and the site owner, until an owner gives it to a role; no built-in
+  role has it and an API key cannot hold it); accepting the terms is for an owner, in person, and
+  the audit trail keeps who accepted which version; the lines are read every four seconds per
+  open tab, at the priority of the worker's own looks, and kept nowhere; the raw action refuses
+  `/v1/chat` and everything under it. The answers are read leniently, since no live one has been
+  seen (a required version of 0, no `messages` beside a `latestSeq`, `seq` as digits). A game
+  that numbers from the start again is told as the console tells it, by a `latestSeq` below the
+  last line read, and also by its start time moving on. The demo server serves the three routes,
+  with its own stand-in terms and a scripted chat.
+  The worker reads `GET /v1/chat` too, for the rules that answer what players type
+  (`src/lib/server/chat-look.ts`; a Chat command and a Staff call): only on a server with such a
+  rule switched on and players on it, after its look, every two seconds, with three seconds for the
+  answer. It finds its place before it acts on anything: a read of `after=0&limit=1`, for
+  `latestSeq` alone, then `after=<latestSeq>&limit=200`, which must bring nothing (a read that
+  does bring lines moves the place on and is made again). From then on it acts on the lines after
+  the place, 200 at a time; a full page, or a `latestSeq` below the place, sends it back to
+  finding. It depends on `latestSeq` being the server's newest line, as the console's own client
+  does: an answer without one, or with one below a line it carries, counts as a failed read, and
+  the rules' rows say the chat cannot be read. Seeing one real answer would settle this. A 409
+  `chat_terms_not_accepted` is asked again once a minute; a 429 holds the server, as at any
+  request. What it reads is answered in the same look and kept nowhere. The demo's scripted chat
+  has a `!rules` and an `!admin` line for these rules.
+- **The event feed waits on those terms.** `GET /v1/feed` gains `pausedForTerms`, which the console
+  shows as "Paused: the event feed sends nothing until the chat terms are accepted." Whether an
+  acceptance outlasts a restart is not known. This one Warcon reads (`feedReportOf` and the `terms`
+  fault in `src/lib/feed-report.ts`): a silent feed's warning on the Config card says the game is
+  holding the feed back, before any fault of the file's lines (a feed switched off in the file
+  comes first).
+- **Players** gain `hiddenName` (the name other players see) and `anonymous` (anonymous mode: other
+  players see only the hidden name) in `GET /v1/players`. Seen on a live server on 2026-11-12
+  (100 players): each row is `{ name, steamId, faction, hiddenName, anonymous, kills, deaths,
+  cash, pingMs }`; every player has a hidden name, one word of 3 to 9 letters, 96 different ones
+  among the hundred (they are not unique); one player was anonymous, with their own `name` and a
+  SteamID like anyone's. The event feed gives no sign of it: on five other servers each of the
+  422 players named in the last kills carried the same name as on the list, which points to the
+  feed naming a player by their own name whatever their mode (nobody anonymous was picked out
+  among them, so it is not proof).
+  What Warcon does with them (`src/lib/anonymous.ts`): the `players` action keeps `hiddenName` on
+  a row only while `anonymous` is true; staff see both names (the player lists, the past-players
+  search, the player page, a match's page) and each session and each player's line of a match
+  keep the hidden name they were played under (`player_sessions.hidden_name`,
+  `match_players.hidden_name`: the last one seen, kept when the player leaves the mode;
+  `player_sessions.anonymous` says whether the session's last look still saw them in it); what is
+  said to anyone else names the player by the hidden name, looked up by SteamID and never taken
+  from the feed: a rule's message about another player, the Discord status card and bounty
+  cards, the public status page, and the public page of a match they played any of hidden
+  (`publicMatch`: its lines, awards and kills, with a stand-in where their SteamID was). A public
+  career leaves such a match out of its last matches (`loadCareer`'s `publicView`) and such a
+  player out of its most killed and nemeses (`publicCombat`). The public leaderboards and a
+  career's totals count and name by SteamID as before, and that undoes the rest where
+  leaderboards are public: the board's rows seen in the last minute, less the roster's, are the
+  hidden players. A worker that has just started names hidden players from the live view the one
+  before it stored until its own first look (`killerVars().prime`). The demo server gives every
+  player a hidden name and puts every third player who drifts in into anonymous mode.
+- **Status** gains, beside the welcome popup's limits (above), `afk: { timeoutSeconds,
+  minTimeoutSeconds, maxTimeoutSeconds }` (600, 300 and 1800 in the demo and on CL-533689).
+- **Config.** Beside the welcome popup's four keys (above), a new section
+  `[/Script/BHAFKDetection.BHAFKDetectionSettings]` holds `DefaultAFKTimeOutSeconds`, the idle time
+  before the game kicks a player, read when a match starts. A quoted value now escapes `"` and `\`
+  with a backslash, which is how a welcome line carries its own quotes.
+
 ## ServerSettings.ini keys the server honours
 
 ```
@@ -133,7 +329,9 @@ Whispers and broadcasts are capped (see `/v1/broadcast` above).
 [/Script/Engine.GameSession]              MaxPlayers
 [MatchState.PreMatch.WaitingForPlayers.PlayerCount]  MinimumRequiredPlayers
 [MatchState.Playing.KOTH]                 ScorePeriod (18-30)
-[/Script/WDGame.WDGameStateSession]       bLockOverpopulatedTeamsConfig, OverpopulatedTeamThresholdConfig
+[/Script/WDGame.WDGameStateSession]       bLockOverpopulatedTeamsConfig, OverpopulatedTeamThresholdConfig; Season 3 (see above):
+                                          bServerWelcomeMessageEnabled, ServerWelcomeMessageCloseDelaySeconds,
+                                          bServerWelcomeMessageSkipForStreamers, ServerWelcomeMessageLines
 [/Script/WDGame.WDServerMapRotationSettings]  bEnabled, RotationMode, +RotationEntries=(Map="",Experience(s)="",Lighting="",ZoneAlternator="")
 [/Script/WDRCON.WDRCONSettings]           bEnabled, BindAddress, Port, Password, PasswordHash, AllowedOrigins, AllowedHosts (CL-507060;
                                           CL-501228 had bWriteAuditLogFile instead)

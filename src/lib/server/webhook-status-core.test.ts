@@ -171,6 +171,21 @@ describe('buildStatusEmbed', () => {
 			inline: false
 		});
 	});
+	test('a player in anonymous mode is on the card as the game shows them, in every style', () => {
+		const on = [...players, { ...p('Sgt Unmasked', 'Valkyra', 40, 1), hiddenName: 'Falcon' }];
+		for (const style of ['banner', 'compact', 'scoreboard'] as const) {
+			const sent = JSON.stringify(
+				statusMessage({ ...opts, style }, server, live({ players: on })).payload
+			);
+			expect([style, sent.includes('Falcon')]).toEqual([style, true]);
+			expect([style, sent.includes('Sgt Unmasked')]).toEqual([style, false]);
+		}
+		// the card is posted again when the name it shows changes: someone turns the mode on
+		const before = statusMessage(opts, server, live({ players: on })).key;
+		const plain = on.map((x) => ({ ...x, hiddenName: undefined }));
+		expect(statusMessage(opts, server, live({ players: plain })).key).not.toBe(before);
+	});
+
 	test('a full 100-slot server stays inside every limit', () => {
 		const many = Array.from({ length: 100 }, (_, i) =>
 			p(`Player_with_a_long_name_${i}`, ['Valkyra', 'Lonestar', 'Manticore'][i % 3], 100 - i, i)
@@ -288,6 +303,13 @@ describe('helpers', () => {
 	test('modeLabel and escapeMarkdown', () => {
 		expect(modeLabel(['KOTH', 'KOTH_Infantry'])).toBe('King of the Hill + Infantry');
 		expect(modeLabel(['Conquest', 'Hardcore'])).toBe('Conquest + Hardcore');
+		// Season 3's modifier goes beside the others, after the game mode
+		expect(modeLabel(['Moscow_KOTH_01', 'KOTH_LimitedGear'])).toBe(
+			'King of the Hill + Limited Gear'
+		);
+		expect(modeLabel(['Madrid_KOTH_01', 'KOTH_InfantryOnly', 'KOTH_LimitedGear'])).toBe(
+			'King of the Hill + Infantry Only + Limited Gear'
+		);
 		expect(modeLabel([])).toBe('');
 		expect(escapeMarkdown('a_b|c`d')).toBe('a\\_b\\|c\\`d');
 	});

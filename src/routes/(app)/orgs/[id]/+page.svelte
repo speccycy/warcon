@@ -10,7 +10,7 @@
 	import CapabilityPicker from '$lib/components/CapabilityPicker.svelte';
 	import SortHeader from '$lib/components/SortHeader.svelte';
 	import { TableSort, matches } from '$lib/table.svelte';
-	import { capabilitySummary, type Capability } from '$lib/capabilities';
+	import { capabilitySummary, PEOPLE_ONLY, type Capability } from '$lib/capabilities';
 	import type {
 		ApiKeyView,
 		InviteView,
@@ -749,10 +749,10 @@
 			<p class="mb-3 text-[13px] text-mist-400">
 				A webhook is one Discord channel, and each one carries what you tick for it: the audit trail
 				(bans, kicks, trigger actions, sign-ins), team kills from the kill feed, bounties set and
-				claimed by a Bounty rule, and live status cards, one per server, showing the map and who is
-				on. Add one webhook per channel; a team-kill or bounty channel is simply a webhook with only
-				that box ticked. In Discord, open the channel's settings → Integrations → Webhooks, copy the
-				URL and paste it here.
+				claimed by a Bounty rule, what players send staff through a Staff call rule, and live status
+				cards, one per server, showing the map and who is on. Add one webhook per channel; a
+				team-kill or bounty channel is simply a webhook with only that box ticked. In Discord, open
+				the channel's settings → Integrations → Webhooks, copy the URL and paste it here.
 			</p>
 			{#each data.webhooks as w (w.id)}
 				<div class="kv items-start">
@@ -1142,7 +1142,7 @@
 			>
 			<div>
 				<span class="field-label">May</span>
-				<CapabilityPicker bind:value={d.capabilities} compact />
+				<CapabilityPicker bind:value={d.capabilities} without={PEOPLE_ONLY} compact />
 			</div>
 			<div>
 				<span class="field-label">Servers</span>
