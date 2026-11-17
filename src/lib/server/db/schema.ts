@@ -955,7 +955,8 @@ export const triggers = pgTable(
 				'weather_cycle',
 				'death_whisper',
 				'chat_command',
-				'staff_call'
+				'staff_call',
+				'map_vote'
 			]
 		}).notNull(),
 		name: text('name').notNull(),
@@ -994,6 +995,12 @@ export const webhooks = pgTable(
 		triggerKinds: jsonb('trigger_kinds'),
 		/** null = every server in the org */
 		serverIds: jsonb('server_ids'),
+		/**
+		 * the Discord roles a Staff call's card pings in this channel: their IDs, a list of digit
+		 * strings ($lib/discord-role), five at most; null or empty = no ping. An owner of the org
+		 * sets them, as they do the address.
+		 */
+		staffRoleIds: jsonb('staff_role_ids'),
 		enabled: boolean('enabled').notNull().default(true),
 		/** keep a live status message per covered server, edited in place; see webhook-status.ts */
 		statusEnabled: boolean('status_enabled').notNull().default(false),

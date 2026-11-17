@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
-	import { invalidate, invalidateAll } from '$app/navigation';
+	import { goto, invalidate, invalidateAll } from '$app/navigation';
+	import { page } from '$app/state';
 	import { api, errorMessage } from '$lib/api';
 	import { MAX_CHAT } from '$lib/chat';
 	import {
@@ -33,7 +34,9 @@
 	import SortHeader from '$lib/components/SortHeader.svelte';
 	import { TableSort, matches } from '$lib/table.svelte';
 	import { watchLive } from '$lib/live';
-	import { CHAT_KINDS, FEED_KINDS, RULE_KINDS } from '$lib/rule-kinds';
+	import { COMMAND_KINDS, FEED_KINDS, RULE_KINDS } from '$lib/rule-kinds';
+	import { MAP_VOTE_DEFAULTS, MAP_VOTE_LIMITS } from '$lib/map-vote';
+	import { DEFAULT_SCORE_CAP } from '$lib/match';
 	import {
 		COMMAND_PREFIX,
 		commandWord,
@@ -41,10 +44,10 @@
 		MAX_COMMAND_REPLIES,
 		MAX_COMMAND_WORD,
 		MAX_STAFF_WORDS,
-		NOT_ANSWERED,
 		STAFF_CALL_DEFAULTS
 	} from '$lib/chat-commands';
 	import RulePicker from '$lib/components/RulePicker.svelte';
+	import ChatRules from './ChatRules.svelte';
 	import { identity } from '$lib/health.svelte';
 	import { restartScheduleOf } from '$lib/uptime';
 	import { LIVE_NAME_APPEND_DEFAULT, LIVE_NAME_PLACEHOLDERS, liveName } from '$lib/live-name';
@@ -72,6 +75,29 @@
 		return `The game restarts daily at ${s.time} UTC (${from}), once the round then in progress ends.`;
 	});
 	let path = $derived(`/api/servers/${encodeURIComponent(id)}/triggers`);
+
+	/**
+	 * The tab's two lists. A chat command (COMMAND_KINDS) answers what players type and queues no
+	 * action, and a server soon has a dozen of them, so they have a list of their own
+	 * (ChatRules.svelte) and the Rules list, its counts and Recent actions keep to the rules that act
+	 * by themselves, a Map vote among them. Which list shows is in the address (?view=commands), so a
+	 * link or a reload lands on the same one. Both are the one read of the server's rules this page's
+	 * load makes.
+	 */
+	type View = 'rules' | 'commands';
+	const isChat = (t: { kind: TriggerKind }) => COMMAND_KINDS.includes(t.kind);
+	let view = $derived<View>(
+		page.url.searchParams.get('view') === 'commands' ? 'commands' : 'rules'
+	);
+	let rules = $derived(data.triggers.filter((t) => !isChat(t)));
+	let chatRules = $derived(data.triggers.filter(isChat));
+	const viewHref = (v: View) => `${page.url.pathname}${v === 'commands' ? '?view=commands' : ''}`;
+	/** To the list a rule of this kind is on: a chat rule made from Add rule's picker shows there. */
+	function showListOf(kind: TriggerKind) {
+		const to: View = isChat({ kind }) ? 'commands' : 'rules';
+		if (to !== view)
+			void goto(viewHref(to), { replaceState: true, noScroll: true, keepFocus: true });
+	}
 
 	/** A risk_kick rule's score threshold, 0 when off; rules saved with a level read as 20 or 50. */
 	const kickAtScoreOf = (c: Record<string, unknown>): number =>
@@ -105,15 +131,14 @@
 		'pending',
 		'sending'
 	];
-	// this server's rules, and the names of deleted ones still among the rows
+	// this server's rules but the chat rules, which queue no action, and the names of deleted ones
+	// still among the rows
 	let ruleNames = $derived(
-		[
-			...new Set([...data.triggers.map((t) => t.name), ...deliveries.map((d) => d.triggerName)])
-		].sort()
+		[...new Set([...rules.map((t) => t.name), ...deliveries.map((d) => d.triggerName)])].sort()
 	);
 	/** the server's rules under the chosen name, whose own rows are read from the server */
 	let ruleIds = $derived(
-		ruleFilter ? data.triggers.filter((t) => t.name === ruleFilter).map((t) => t.id) : []
+		ruleFilter ? rules.filter((t) => t.name === ruleFilter).map((t) => t.id) : []
 	);
 	/**
 	 * Those rules' own rows, the newest 40 of the last week: the server's newest 40, which the page
@@ -244,7 +269,11 @@
 												? 'skip map'
 												: action === 'weather_cycle'
 													? 'weather'
-													: action;
+													: action === 'map_vote_open'
+														? 'vote'
+														: action === 'map_vote'
+															? 'next map'
+															: action;
 	const label = (kind: TriggerKind) => KINDS.find((k) => k.kind === kind)?.label ?? kind;
 	const blurb = (kind: TriggerKind) => KINDS.find((k) => k.kind === kind)?.blurb ?? '';
 	/** Why a kind cannot run on this server yet, or '' when it can. */
@@ -286,6 +315,16 @@
 						: !canChat
 							? 'Saving needs the Chat capability as well as Automation: the rule messages players.'
 							: '';
+			case 'map_vote':
+				return !data.features.chat
+					? 'Needs a server that serves the in-game chat (WARDOGS Season 3 on): this one’s build does not.'
+					: !canReadChat
+						? 'Saving needs the Read chat capability as well as Automation: the rule has the panel read what players type. An owner of the organisation gives it to a role on the Roles tab.'
+						: !canChat
+							? 'Saving needs the Chat capability as well as Automation: the rule messages players.'
+							: !canConfig
+								? 'Saving needs the Config & settings capability as well as Automation: the rule puts the winner next in the rotation in the config document.'
+								: '';
 			case 'empty_reset':
 			case 'restart_skip':
 				return canMatch
@@ -410,12 +449,14 @@
 				? 'Needs the kill feed'
 				: kind === 'bounty' || kind === 'death_whisper'
 					? 'Needs Chat'
-					: kind === 'chat_command' || kind === 'staff_call'
+					: kind === 'chat_command' || kind === 'staff_call' || kind === 'map_vote'
 						? !data.features.chat
 							? 'Needs Season 3 chat'
 							: !canReadChat
 								? 'Needs Read chat'
-								: 'Needs Chat'
+								: !canChat
+									? 'Needs Chat'
+									: 'Needs Config & settings'
 						: kind === 'risk_kick'
 							? 'Needs a Steam key'
 							: kind === 'seed_reward'
@@ -513,9 +554,7 @@
 		)
 	);
 	let onlyFailing = $state(false);
-	let rows = $derived(
-		onlyFailing ? data.triggers.filter((t) => health.get(t.id)?.failing) : data.triggers
-	);
+	let rows = $derived(onlyFailing ? rules.filter((t) => health.get(t.id)?.failing) : rules);
 	// The kill feed rules that are on while nothing comes from the feed ($lib/feed-health): they say
 	// so on their rows, and one notice above the list names them.
 	let feedSilent = $derived(data.feedStatus.state === 'silent');
@@ -635,6 +674,15 @@
 		ack: string;
 		usage: string;
 		wait: string;
+		/** a Map vote's score, seconds, maps and votes needed, and what it says */
+		startAt: number;
+		voteSeconds: number;
+		voteOptions: number;
+		minVotes: number;
+		openMessage: string;
+		tallyMessage: string;
+		resultMessage: string;
+		noneMessage: string;
 	}
 	/** WARDOGS' factions, offered for Team balance; a name the game adds later can still be typed. */
 	const FACTIONS = ['Lonestar', 'Valkyra', 'Manticore'];
@@ -801,7 +849,14 @@
 				'everyMinutes',
 				kind === 'afk_protection' ? 3 : kind === 'weather_cycle' ? 30 : 15
 			),
-			minPlayers: n('minPlayers', kind === 'bounty' || kind === 'afk_watch' ? 20 : 1),
+			minPlayers: n(
+				'minPlayers',
+				kind === 'bounty' || kind === 'afk_watch'
+					? 20
+					: kind === 'map_vote'
+						? MAP_VOTE_DEFAULTS.minPlayers
+						: 1
+			),
 			maxPlayers: typeof c.maxPlayers === 'number' ? c.maxPlayers : null,
 			afterMinutes: n('afterMinutes', 20),
 			cooldownMinutes: n('cooldownMinutes', 30),
@@ -940,7 +995,15 @@
 			).join(' '),
 			ack: s('ack', STAFF_CALL_DEFAULTS.ack),
 			usage: s('usage', STAFF_CALL_DEFAULTS.usage),
-			wait: s('wait', STAFF_CALL_DEFAULTS.wait)
+			wait: s('wait', STAFF_CALL_DEFAULTS.wait),
+			startAt: n('startAt', MAP_VOTE_DEFAULTS.startAt),
+			voteSeconds: n('seconds', MAP_VOTE_DEFAULTS.seconds),
+			voteOptions: n('options', MAP_VOTE_DEFAULTS.options),
+			minVotes: n('minVotes', MAP_VOTE_DEFAULTS.minVotes),
+			openMessage: s('openMessage', MAP_VOTE_DEFAULTS.openMessage),
+			tallyMessage: s('tallyMessage', MAP_VOTE_DEFAULTS.tallyMessage),
+			resultMessage: s('resultMessage', MAP_VOTE_DEFAULTS.resultMessage),
+			noneMessage: s('noneMessage', MAP_VOTE_DEFAULTS.noneMessage)
 		};
 		// a new Chat command is named after its word
 		if (kind === 'chat_command' && !t) form.name = COMMAND_PREFIX + form.command;
@@ -1177,6 +1240,18 @@
 					wait: f.wait,
 					cooldownSeconds: Number(f.cooldownSeconds)
 				};
+			case 'map_vote':
+				return {
+					startAt: Number(f.startAt),
+					seconds: Number(f.voteSeconds),
+					options: Number(f.voteOptions),
+					minPlayers: Number(f.minPlayers),
+					minVotes: Number(f.minVotes),
+					openMessage: f.openMessage,
+					tallyMessage: f.tallyMessage,
+					resultMessage: f.resultMessage,
+					noneMessage: f.noneMessage
+				};
 		}
 	}
 	/** Command words as typed in one field: spaces or commas between, a "!" in front or not. */
@@ -1257,6 +1332,23 @@
 		f.cooldownSeconds = st.cooldown;
 	}
 
+	/**
+	 * The word typed into a Chat command's editor. The rule's name follows it while the name is
+	 * still the word's (or a copy's): the Chat commands list shows the word, and its switch, menu
+	 * and Delete go by the name, so the two should not part unless the author parts them.
+	 */
+	function retype(f: Form, word: string) {
+		const was = typedWords([f.command]);
+		if (!f.name.trim() || f.name === was || f.name === `${was} (copy)`) f.name = typedWords([word]);
+		f.command = word;
+	}
+
+	/** The editor for a new Chat command, filled from one of the starters. */
+	function startCommand(starter: number) {
+		open('chat_command');
+		if (form) startFrom(form, COMMAND_STARTERS[starter]);
+	}
+
 	async function run(fn: () => Promise<unknown>, done: string) {
 		busy = true;
 		try {
@@ -1280,7 +1372,10 @@
 				f.id ? api('PATCH', `${path}/${f.id}`, body) : api('POST', path, { kind: f.kind, ...body }),
 			f.id ? 'Trigger saved.' : 'Trigger added.'
 		);
-		if (ok) form = null;
+		if (ok) {
+			form = null;
+			showListOf(f.kind);
+		}
 	}
 	const toggle = (t: TriggerView) =>
 		run(
@@ -1559,26 +1654,111 @@
 					.filter(Boolean)
 					.join(' · ');
 			}
+			case 'map_vote': {
+				const needed = Number(c.minVotes) || 1;
+				return [
+					`at ${c.startAt} points with ${c.minPlayers}+ on`,
+					`${c.options} maps for ${c.seconds} s`,
+					`${COMMAND_PREFIX}1 to ${COMMAND_PREFIX}${c.options} in chat`,
+					needed > 1 ? `${needed} votes needed` : '',
+					'the winner next in the rotation'
+				]
+					.filter(Boolean)
+					.join(' · ');
+			}
 		}
 	}
+
+	/** What a Map vote waits for before it can read the chat, as the Chat commands list words it. */
+	const VOTE_WAITS = {
+		build: "this server's build does not serve the in-game chat",
+		terms: "the game's chat terms have not been accepted on this server (Chat tab)",
+		failing: 'the chat cannot be read right now; votes open again once it can'
+	} as const;
+	const voteWait = (t: TriggerView): keyof typeof VOTE_WAITS | '' =>
+		t.kind !== 'map_vote' || !t.enabled
+			? ''
+			: !data.features.chat
+				? 'build'
+				: t.chatWait === 'terms' || t.chatWait === 'failing' || t.chatWait === 'build'
+					? t.chatWait
+					: '';
 </script>
 
-<p class="mb-4 text-[13px] text-mist-400">
-	Rules act on {data.server.demo ? 'the demo server' : 'this server'} as things happen: a join, a kill,
-	a quiet hour. Every action is recorded below and in the audit trail as
-	<span class="chip">trigger</span>, but for a Death whisper that went, which is only below, and
-	what the chat rules answer, which is recorded nowhere: the panel keeps nothing of what players
-	type.
-</p>
+<!-- The tab's two lists, as links: the address says which one shows. The link followed keeps the
+     focus, as a button would: this is one page, and the keyboard goes on from where it was. -->
+<nav class="join mb-4" aria-label="Automation lists">
+	<a
+		class="btn {view === 'rules' ? 'btn-primary' : ''}"
+		href={viewHref('rules')}
+		aria-current={view === 'rules' ? 'true' : undefined}
+		data-sveltekit-replacestate
+		data-sveltekit-noscroll
+		data-sveltekit-keepfocus>Rules · {rules.length}</a
+	>
+	<a
+		class="btn {view === 'commands' ? 'btn-primary' : ''}"
+		href={viewHref('commands')}
+		aria-current={view === 'commands' ? 'true' : undefined}
+		data-sveltekit-replacestate
+		data-sveltekit-noscroll
+		data-sveltekit-keepfocus>Chat commands · {chatRules.length}</a
+	>
+</nav>
 
-<div class="mb-3 flex flex-wrap items-start gap-3">
+<!-- A dry run from a row opens above its list, so the rows never change height. -->
+{#snippet rowDry()}
+	{#if dry && dryFor !== 'form' && !form && isChat(dry) === (view === 'commands')}
+		<div class="mb-3 rounded-ctl border border-l-2 border-black border-l-accent bg-ink-900 p-3">
+			{@render dryResult(dry, dryTitle)}
+		</div>
+	{/if}
+{/snippet}
+
+{#if view === 'commands'}
+	<p class="mb-4 text-[13px] text-mist-400">
+		Chat commands answer what players type in the in-game chat of {data.server.demo
+			? 'the demo server'
+			: 'this server'}: <span class="font-mono">{COMMAND_PREFIX}</span> and a word. What they answer is
+		recorded nowhere, not under Recent actions and not in the audit trail: the panel keeps nothing of
+		what players type.
+	</p>
+	<ChatRules
+		rules={chatRules}
+		serverId={id}
+		chat={data.features.chat}
+		{canReadChat}
+		staffHooks={data.staffHooks}
+		{admin}
+		{busy}
+		{dryBusy}
+		{now}
+		lacks={needs('chat_command')}
+		starters={COMMAND_STARTERS}
+		above={rowDry}
+		onadd={(kind) => open(kind)}
+		onstart={startCommand}
+		onedit={(t, copy) => open(t.kind, t, copy)}
+		ontoggle={toggle}
+		onremove={remove}
+		onpreview={(t) => dryRun(t.kind, t.config, t.id, t.name)}
+	/>
+{:else}
+	<p class="mb-4 text-[13px] text-mist-400">
+		Rules act on {data.server.demo ? 'the demo server' : 'this server'} as things happen: a join, a kill,
+		a quiet hour. Every action is recorded below and in the audit trail as
+		<span class="chip">trigger</span>, but for a Death whisper that went, which is only below.
+	</p>
+{/if}
+
+<!-- The Rules list from here down stays where it is while the other list shows, hidden: what it
+     was narrowed to is there again on the way back. -->
+<div class="mb-3 flex flex-wrap items-start gap-3" hidden={view !== 'rules'}>
 	<div class="min-w-0 grow">
 		<span class="label-sm mb-0">Rules</span>
 		<div class="mt-0.5 text-[12.5px] text-mist-400">
-			{#if data.triggers.length}
-				{data.triggers.length} rule{data.triggers.length === 1 ? '' : 's'} · {data.triggers.filter(
-					(t) => t.enabled
-				).length} on
+			{#if rules.length}
+				{rules.length} rule{rules.length === 1 ? '' : 's'} · {rules.filter((t) => t.enabled).length} on
 				{#if lastAction}· last action <span title={fmtTime(lastAction)}
 						>{fmtAgo(lastAction, now)}</span
 					>{/if}
@@ -1595,7 +1775,7 @@
 					>
 				{/if}
 			{:else}
-				No rules on this server yet
+				No {chatRules.length ? 'other ' : ''}rules on this server yet
 			{/if}
 		</div>
 	</div>
@@ -1606,7 +1786,7 @@
 	{/if}
 </div>
 
-{#if waitingOnFeed.length}
+{#if view === 'rules' && waitingOnFeed.length}
 	<div
 		class="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-ctl border border-warn/30 bg-warn/10 px-3 py-2 text-[13px]"
 	>
@@ -1622,14 +1802,9 @@
 	</div>
 {/if}
 
-<!-- A dry run from a row opens here, above the list, so the rows never change height. -->
-{#if dry && dryFor !== 'form' && !form}
-	<div class="mb-3 rounded-ctl border border-l-2 border-black border-l-accent bg-ink-900 p-3">
-		{@render dryResult(dry, dryTitle)}
-	</div>
-{/if}
+{#if view === 'rules'}{@render rowDry()}{/if}
 
-<div class="space-y-2">
+<div class="space-y-2" hidden={view !== 'rules'}>
 	{#each rows as t (t.id)}
 		{@const h = health.get(t.id)}
 		<!-- An off row fades its contents, not the panel: opacity on the panel would fade the ⋯ menu
@@ -1721,50 +1896,6 @@
 									· {needs(t.kind)}{/if}
 							{/if}
 						</div>
-					{:else if CHAT_KINDS.includes(t.kind)}
-						<!-- A chat rule queues no actions: its row says what it waits for, that its calls
-						     reach nobody, that its last answer did not go out, or how often it answered. Never
-						     who typed what. -->
-						{@const lost = t.kind === 'staff_call' && !data.staffHooks}
-						{@const unsent = t.lastResult.startsWith(NOT_ANSWERED)}
-						<div
-							class="mt-0.5 text-[12px] {t.enabled &&
-							(t.chatWait || lost || unsent || !data.features.chat)
-								? 'text-warn'
-								: 'text-mist-600'}"
-						>
-							{#if !t.enabled}
-								Off · {#if t.lastFiredAt}last answered <span title={fmtTime(t.lastFiredAt)}
-										>{fmtAgo(t.lastFiredAt, now)}</span
-									>{:else}never answered{/if}
-							{:else if !data.features.chat || t.chatWait === 'build'}
-								Waiting: this server's build does not serve the in-game chat
-							{:else if t.chatWait === 'terms'}
-								Waiting: the game's chat terms have not been accepted on this server{#if canReadChat}
-									·
-									<a class="text-accent underline" href="/server/{encodeURIComponent(id)}/chat"
-										>Chat tab</a
-									>{/if}
-							{:else if t.chatWait === 'failing'}
-								Waiting: the chat cannot be read right now · it answers again once it can
-							{:else if lost}
-								No working Discord webhook takes Staff calls for this server, so a call reaches
-								nobody · under Organisation → Webhooks an owner ticks the box on one, or mends the
-								one Discord refuses
-							{:else if unsent}
-								{t.lastResult}{#if t.lastFiredAt}
-									· last answered <span title={fmtTime(t.lastFiredAt)}
-										>{fmtAgo(t.lastFiredAt, now)}</span
-									>{/if}
-							{:else if t.lastFiredAt}
-								{t.kind === 'staff_call' ? 'Last call passed on' : 'Answered'}
-								<span title={fmtTime(t.lastFiredAt)}>{fmtAgo(t.lastFiredAt, now)}</span>
-								· {t.fireCount}
-								{t.kind === 'staff_call' ? 'call' : 'time'}{t.fireCount === 1 ? '' : 's'} so far
-							{:else}
-								Not used yet · nothing a player types is kept
-							{/if}
-						</div>
 					{:else}
 						<!-- One of five shapes, most urgent first: failing, off, waiting on a silent kill feed, fired, never fired. -->
 						<div
@@ -1786,6 +1917,8 @@
 								Off · {#if t.lastFiredAt}last fired <span title={fmtTime(t.lastFiredAt)}
 										>{fmtAgo(t.lastFiredAt, now)}</span
 									>{:else}never fired{/if}
+							{:else if voteWait(t)}
+								<span class="text-warn">Waiting: {VOTE_WAITS[voteWait(t) || 'failing']}</span>
 							{:else if onFeed(t)}
 								Waiting on the kill feed · nothing since the server started {feedStarted} ·
 								{#if t.lastFiredAt}last fired <span title={fmtTime(t.lastFiredAt)}
@@ -1856,7 +1989,9 @@
 			{:else if onlyFailing}
 				<p class="text-mist-600">No rule is failing.</p>
 			{:else}
-				<p class="text-mist-600">No rules on this server yet.</p>
+				<p class="text-mist-600">
+					No {chatRules.length ? 'other ' : ''}rules on this server yet.
+				</p>
 			{/if}
 		</div>
 	{/each}
@@ -1930,6 +2065,13 @@
 					class={r.fires ? 'text-warn' : 'text-ok'}>{r.fires}</b
 				>
 				time{r.fires === 1 ? '' : 's'}</span
+			>
+		{:else if r.kind === 'map_vote'}
+			<span
+				>Replayed the last 24 h on this server: would have opened <b
+					class={r.fires ? 'text-warn' : 'text-ok'}>{r.fires}</b
+				>
+				vote{r.fires === 1 ? '' : 's'}</span
 			>
 		{:else if r.kind === 'weather_cycle'}
 			<span
@@ -3736,7 +3878,8 @@
 									class="input font-mono"
 									type="text"
 									data-plain
-									bind:value={f.command}
+									value={f.command}
+									oninput={(e) => retype(f, e.currentTarget.value)}
 									maxlength={MAX_COMMAND_WORD + 1}
 									placeholder="rules"
 									autocapitalize="off"
@@ -3918,6 +4061,149 @@
 						channel, because the player asked for it. The panel itself keeps none of it: no audit
 						row, nothing on the player's page.
 					</p>
+				{:else if f.kind === 'map_vote'}
+					<fieldset class="space-y-2 text-[13px]">
+						<legend class="field-label">When</legend>
+						<div class="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+							Opens when the side in the lead reaches
+							<input
+								class="input w-20 text-right"
+								type="number"
+								min={MAP_VOTE_LIMITS.startAt[0]}
+								max={MAP_VOTE_LIMITS.startAt[1]}
+								bind:value={f.startAt}
+								aria-label="Opens when the side in the lead reaches, points"
+								required
+							/>
+							points, with at least
+							<input
+								class="input w-20 text-right"
+								type="number"
+								min={MAP_VOTE_LIMITS.minPlayers[0]}
+								max={MAP_VOTE_LIMITS.minPlayers[1]}
+								bind:value={f.minPlayers}
+								aria-label="With at least, players"
+								required
+							/>
+							players on
+						</div>
+						<div class="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+							Offers
+							<input
+								class="input w-20 text-right"
+								type="number"
+								min={MAP_VOTE_LIMITS.options[0]}
+								max={MAP_VOTE_LIMITS.options[1]}
+								bind:value={f.voteOptions}
+								aria-label="Offers, maps"
+								required
+							/>
+							maps for
+							<input
+								class="input w-20 text-right"
+								type="number"
+								min={MAP_VOTE_LIMITS.seconds[0]}
+								max={MAP_VOTE_LIMITS.seconds[1]}
+								bind:value={f.voteSeconds}
+								aria-label="Offers maps for, seconds"
+								required
+							/>
+							s
+						</div>
+						<div class="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+							A result needs at least
+							<input
+								class="input w-20 text-right"
+								type="number"
+								min={MAP_VOTE_LIMITS.minVotes[0]}
+								max={MAP_VOTE_LIMITS.minVotes[1]}
+								bind:value={f.minVotes}
+								aria-label="A result needs at least, votes"
+								required
+							/>
+							vote{Number(f.minVotes) === 1 ? '' : 's'}
+						</div>
+						<p class="note">
+							A match is won at {DEFAULT_SCORE_CAP} points, and the side holding the zone scores one a
+							score tick (18 to 30 s, on the Config tab): from {f.startAt}, the match has at least
+							{Math.max(0, DEFAULT_SCORE_CAP - Number(f.startAt)) * 18} s to go, so a vote shorter than
+							that closes before it ends. One still open when the match is won closes then.
+						</p>
+					</fieldset>
+					<fieldset class="space-y-2">
+						<legend class="field-label">As it opens</legend>
+						<input
+							class="input"
+							type="text"
+							bind:value={f.openMessage}
+							maxlength={MAX_CHAT}
+							aria-label="Said as the vote opens"
+							required
+						/>
+						{#if !/\{options\}/i.test(f.openMessage)}
+							<p class="note mb-0 text-warn">
+								Put {'{options}'} in it: it is where players read the maps and their numbers.
+							</p>
+						{/if}
+					</fieldset>
+					<fieldset class="space-y-2">
+						<legend class="field-label">Halfway, the votes so far, blank for none</legend>
+						<input
+							class="input"
+							type="text"
+							bind:value={f.tallyMessage}
+							maxlength={MAX_CHAT}
+							aria-label="Said halfway, with the votes so far"
+						/>
+					</fieldset>
+					<fieldset class="space-y-2">
+						<legend class="field-label">Once the winner is next</legend>
+						<input
+							class="input"
+							type="text"
+							bind:value={f.resultMessage}
+							maxlength={MAX_CHAT}
+							aria-label="Said once the winner is next"
+							required
+						/>
+					</fieldset>
+					<fieldset class="space-y-2">
+						<legend class="field-label">With too few votes, blank for none</legend>
+						<input
+							class="input"
+							type="text"
+							bind:value={f.noneMessage}
+							maxlength={MAX_CHAT}
+							aria-label="Said when the vote closes with too few votes"
+						/>
+					</fieldset>
+					{@render placeholders('map_vote', [
+						f.openMessage,
+						f.tallyMessage,
+						f.resultMessage,
+						f.noneMessage
+					])}
+					<p class="note">
+						Players vote by typing <span class="font-mono">{COMMAND_PREFIX}1</span>,
+						<span class="font-mono">{COMMAND_PREFIX}2</span> and so on in any chat channel, and a
+						player's last vote counts. The maps come from this server's rotation as the vote opens:
+						the entry it has next first, then the first entry of each other map as the rotation has
+						it, never the map being played (an Infantry Only rotation offers Infantry Only maps;
+						where the maps offered are played differently, each says how). The winner swaps places
+						with the entry the server had next, in the config document, so the rotation must be on
+						and Ordered. A tie is drawn. {'{options}'} lists the maps with their numbers, {'{tally}'}
+						the votes for each, {'{total}'} all votes, {'{winner}'} and {'{votes}'} the map that won and
+						its votes.
+					</p>
+					<p class="note">
+						The panel reads the chat for this rule only around its vote, from five points short of
+						its score until the vote closes, and keeps nothing of it: who voted for which map is
+						held in memory until the vote closes, and what is recorded (Recent actions, the audit
+						trail) is the count for each map. Discord hears only of what fails. A vote opens as the
+						score passes yours: a rule switched on, or a panel update, with the score already past
+						waits for the next match, and an update while a vote is open ends it with the rotation
+						as it was. One rule per server.
+					</p>
 				{/if}
 
 				<div class="rounded-ctl border border-black bg-ink-950 px-3 py-2 text-[13px]">
@@ -3975,7 +4261,7 @@
 	</Modal>
 {/if}
 
-{#if data.triggers.length || deliveries.length}
+{#if view === 'rules' && (rules.length || deliveries.length)}
 	<div class="mt-4 scroll-mt-4 panel" bind:this={actionsPanel}>
 		<div class="mb-3 flex flex-wrap items-center gap-2">
 			<span class="label-sm mb-0">Recent actions</span>
